@@ -1,0 +1,8 @@
+bin/
+obj/
+.vs/
+artifacts/evals/latest.json
+src/AgentLearningLab.Web/App_Data/
+src/AgentLearningLab.Web/appsettings.Local.json
+.env
+.env.local

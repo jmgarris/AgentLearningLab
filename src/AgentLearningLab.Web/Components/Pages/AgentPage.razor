@@ -1,0 +1,257 @@
+@page "/agent"
+@using AgentLearningLab.Application.Abstractions
+@using AgentLearningLab.Domain.Enums
+@inject AgentLearningLab.Agent.AgentRunner AgentRunner
+@inject AgentLearningLab.Web.Services.DemoIdentityService IdentityService
+@inject IConversationStore ConversationStore
+
+<PageTitle>Agent Lab</PageTitle>
+
+<h1>ClubOps Learning Agent</h1>
+
+@if (!IdentityService.IsEnabled)
+{
+    <p>This page requires the Development environment because the sample uses a development-only identity switcher.</p>
+}
+else
+{
+    <div class="agent-layout">
+        <section class="panel transcript-panel">
+            <div class="panel-header">
+                <div>
+                    <p class="eyebrow">Conversation</p>
+                    <h2>Interactive agent run</h2>
+                </div>
+                <div class="conversation-tools">
+                    <select @bind="selectedConversationIdString" @bind:after="HandleConversationChangedAsync">
+                        <option value="">New conversation</option>
+                        @foreach (var conversation in conversations)
+                        {
+                            <option value="@conversation.ConversationId.ToString()">@conversation.Title</option>
+                        }
+                    </select>
+                    <button class="quiet-button" @onclick="ClearConversationAsync" disabled="@busy">Clear conversation</button>
+                </div>
+            </div>
+
+            <div class="identity-chip">Active user: @currentUser?.Email (@currentUser?.Role)</div>
+
+            @if (busy)
+            {
+                <div class="busy-indicator">Agent is working through the current step loop...</div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(errorMessage))
+            {
+                <div class="error-banner">@errorMessage</div>
+            }
+
+            <div class="transcript">
+                @if (transcript.Count == 0)
+                {
+                    <div class="empty-state">Start with a prompt like “What is the current status of N123AB?”</div>
+                }
+                else
+                {
+                    @foreach (var item in transcript)
+                    {
+                        <article class="message-card @item.Kind.ToString().ToLowerInvariant()">
+                            <div class="message-meta">
+                                <span>@item.Sender</span>
+                                <span>@item.CreatedAtUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</span>
+                            </div>
+                            <p>@item.Content</p>
+                        </article>
+                    }
+                }
+            </div>
+
+            <EditForm Model="this" OnValidSubmit="SendAsync">
+                <div class="composer">
+                    <InputTextArea class="composer-input" @bind-Value="messageText" />
+                    <button class="primary-button" type="submit" disabled="@busy">Send</button>
+                </div>
+            </EditForm>
+        </section>
+
+        <aside class="panel side-panel">
+            <div class="panel-header">
+                <div>
+                    <p class="eyebrow">Trace</p>
+                    <h2>Tool activity</h2>
+                </div>
+            </div>
+
+            <ol class="step-list">
+                @foreach (var step in latestSteps)
+                {
+                    <li>@step.Summary</li>
+                }
+            </ol>
+
+            @if (latestResult?.Citations.Count > 0)
+            {
+                <div class="citation-box">
+                    <h3>Citations</h3>
+                    <ul>
+                        @foreach (var citation in latestResult.Citations)
+                        {
+                            <li>@citation.DisplayText</li>
+                        }
+                    </ul>
+                </div>
+            }
+
+            @if (latestResult?.PendingApproval is not null)
+            {
+                <div class="approval-card">
+                    <p class="eyebrow">Approval required</p>
+                    <h3>@latestResult.PendingApproval.ToolName</h3>
+                    <p>@latestResult.PendingApproval.ActionSummary</p>
+                    <p>Expires: @latestResult.PendingApproval.ExpiresAtUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</p>
+
+                    @if (currentUser?.Role == ClubRole.Administrator)
+                    {
+                        <div class="approval-actions">
+                            <button class="primary-button" @onclick="ApproveAsync" disabled="@busy">Approve</button>
+                            <button class="quiet-button" @onclick="RejectAsync" disabled="@busy">Reject</button>
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="note-text">Only an administrator can approve this action.</p>
+                    }
+                </div>
+            }
+        </aside>
+    </div>
+}
+
+@code {
+    private AuthenticatedUserContext? currentUser;
+    private string messageText = "What is the current status of N123AB?";
+    private string? errorMessage;
+    private bool busy;
+    private string selectedConversationIdString = string.Empty;
+    private IReadOnlyList<ConversationSummaryViewModel> conversations = [];
+    private IReadOnlyList<ConversationTranscriptItem> transcript = [];
+    private AgentRunResult? latestResult;
+    private IReadOnlyList<AgentStepSummary> latestSteps = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        currentUser = await IdentityService.GetCurrentUserAsync(CancellationToken.None);
+        conversations = await ConversationStore.ListConversationsAsync(currentUser.Email, CancellationToken.None);
+
+        if (!string.IsNullOrWhiteSpace(selectedConversationIdString) && Guid.TryParse(selectedConversationIdString, out var conversationId))
+        {
+            transcript = await ConversationStore.GetTranscriptAsync(conversationId, CancellationToken.None);
+        }
+    }
+
+    private async Task SendAsync()
+    {
+        if (currentUser is null || string.IsNullOrWhiteSpace(messageText))
+        {
+            return;
+        }
+
+        busy = true;
+        errorMessage = null;
+
+        try
+        {
+            Guid? conversationId = Guid.TryParse(selectedConversationIdString, out var parsedConversationId)
+                ? parsedConversationId
+                : null;
+
+            latestResult = await AgentRunner.RunAsync(conversationId, messageText, currentUser, CancellationToken.None);
+            selectedConversationIdString = latestResult.ConversationId.ToString();
+            latestSteps = latestResult.Steps;
+            messageText = string.Empty;
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task ApproveAsync()
+    {
+        if (currentUser is null || latestResult?.PendingApproval is null)
+        {
+            return;
+        }
+
+        busy = true;
+        errorMessage = null;
+
+        try
+        {
+            latestResult = await AgentRunner.ApproveAsync(latestResult.PendingApproval.ApprovalRequestId, currentUser, CancellationToken.None);
+            latestSteps = latestResult.Steps;
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task RejectAsync()
+    {
+        if (currentUser is null || latestResult?.PendingApproval is null)
+        {
+            return;
+        }
+
+        busy = true;
+        errorMessage = null;
+
+        try
+        {
+            latestResult = await AgentRunner.RejectAsync(latestResult.PendingApproval.ApprovalRequestId, currentUser, CancellationToken.None);
+            latestSteps = latestResult.Steps;
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task ClearConversationAsync()
+    {
+        if (Guid.TryParse(selectedConversationIdString, out var conversationId))
+        {
+            await ConversationStore.ClearConversationAsync(conversationId, CancellationToken.None);
+            transcript = [];
+            latestResult = null;
+            latestSteps = [];
+            await RefreshAsync();
+        }
+    }
+
+    private async Task HandleConversationChangedAsync()
+    {
+        await RefreshAsync();
+    }
+}

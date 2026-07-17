@@ -1,0 +1,31 @@
+@inherits LayoutComponentBase
+@inject AgentLearningLab.Agent.ModelRuntimeInfo RuntimeInfo
+
+<div class="shell">
+    <aside class="shell-nav">
+        <div class="brand-block">
+            <p class="eyebrow">AgentLearningLab</p>
+            <h1>ClubOps Learning Agent</h1>
+            <p>Explicit agent loops, approvals, retrieval, and evaluations in one solution.</p>
+        </div>
+        <AgentLearningLab.Web.Components.Shared.DevIdentitySwitcher />
+        <NavMenu />
+    </aside>
+
+    <main class="shell-main">
+        @if (RuntimeInfo.IsOffline)
+        {
+            <div class="mode-banner">Offline learning mode — responses are produced by a deterministic fake model.</div>
+        }
+
+        <article class="content-wrap">
+            @Body
+        </article>
+    </main>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">x</span>
+</div>

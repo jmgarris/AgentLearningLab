@@ -1,0 +1,53 @@
+@page "/outbox"
+@using AgentLearningLab.Application.Abstractions
+@using AgentLearningLab.Domain.Enums
+@inject AgentLearningLab.Web.Services.DemoIdentityService IdentityService
+@inject IOutboxService OutboxService
+
+<PageTitle>Outbox</PageTitle>
+
+<h1>Fake Outbox</h1>
+
+@if (!IdentityService.IsEnabled)
+{
+    <p>This page is available in Development mode only.</p>
+}
+else
+{
+    @if (currentUser?.Role != ClubRole.Administrator)
+    {
+        <div class="panel">
+            <p>Only the administrator view may inspect the fake outbox.</p>
+        </div>
+    }
+    else
+    {
+        <div class="panel">
+            @foreach (var message in messages)
+            {
+                <article class="message-card assistant">
+                    <div class="message-meta">
+                        <span>@message.RecipientName</span>
+                        <span>@message.Status</span>
+                    </div>
+                    <h2>@message.Subject</h2>
+                    <p>@message.Body</p>
+                </article>
+            }
+        </div>
+    }
+}
+
+@code {
+    private AuthenticatedUserContext? currentUser;
+    private IReadOnlyList<OutboxMessageViewModel> messages = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        currentUser = await IdentityService.GetCurrentUserAsync(CancellationToken.None);
+        if (currentUser.Role == ClubRole.Administrator)
+        {
+            messages = await OutboxService.ListMessagesAsync(CancellationToken.None);
+        }
+    }
+}

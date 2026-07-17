@@ -1,0 +1,34 @@
+@page "/knowledge"
+@using AgentLearningLab.Application.Abstractions
+@inject IKnowledgeSearchService KnowledgeSearchService
+
+<PageTitle>Knowledge</PageTitle>
+
+<h1>Seeded Knowledge Base</h1>
+
+@foreach (var document in documents)
+{
+    <section class="panel knowledge-panel">
+        <h2>@document.Title</h2>
+        <p>@document.Summary</p>
+        <div class="knowledge-chunks">
+            @foreach (var chunk in document.Chunks)
+            {
+                <article class="chunk-card">
+                    <p class="eyebrow">@chunk.CitationId</p>
+                    <h3>@chunk.Section</h3>
+                    <p>@chunk.Content</p>
+                </article>
+            }
+        </div>
+    </section>
+}
+
+@code {
+    private IReadOnlyList<KnowledgeDocumentViewModel> documents = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        documents = await KnowledgeSearchService.GetKnowledgeDocumentsAsync(CancellationToken.None);
+    }
+}

@@ -1,0 +1,55 @@
+@page "/runs"
+@using AgentLearningLab.Application.Abstractions
+@inject IAgentRunStore RunStore
+
+<PageTitle>Runs</PageTitle>
+
+<h1>Recent Agent Runs</h1>
+
+<div class="panel">
+    @if (runs.Count == 0)
+    {
+        <p>No agent runs have been recorded yet.</p>
+    }
+    else
+    {
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>User</th>
+                    <th>Status</th>
+                    <th>Duration</th>
+                    <th>Steps</th>
+                    <th>Tools</th>
+                    <th>Approval</th>
+                    <th>Error</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var run in runs)
+                {
+                    <tr>
+                        <td><a href="@($"/runs/{run.RunId}")">@run.StartedAtUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</a></td>
+                        <td>@run.UserEmail</td>
+                        <td>@run.Status</td>
+                        <td>@run.Duration.TotalSeconds.ToString("0.0")s</td>
+                        <td>@run.StepCount</td>
+                        <td>@string.Join(", ", run.ToolsUsed)</td>
+                        <td>@run.ApprovalStatus</td>
+                        <td>@run.ErrorCode</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    private IReadOnlyList<RunListItemViewModel> runs = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        runs = await RunStore.ListRecentRunsAsync(CancellationToken.None);
+    }
+}

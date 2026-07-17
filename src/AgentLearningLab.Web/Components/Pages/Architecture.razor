@@ -1,0 +1,33 @@
+@page "/architecture"
+
+<PageTitle>Architecture</PageTitle>
+
+<h1>Architecture Overview</h1>
+
+<div class="architecture-grid">
+    <section class="panel">
+        <p class="eyebrow">Projects</p>
+        <h2>Layered solution</h2>
+        <ul>
+            <li><strong>Domain</strong> defines entities and enums.</li>
+            <li><strong>Application</strong> defines options, contracts, result models, and tool abstractions.</li>
+            <li><strong>Infrastructure</strong> handles EF Core persistence, seed data, approvals, retrieval, and audit storage.</li>
+            <li><strong>Tools</strong> contains explicit whitelist tool implementations and argument validation.</li>
+            <li><strong>Agent</strong> contains the runner, tool loop, fake model, and real Responses API adapter.</li>
+            <li><strong>Web</strong> hosts the Blazor learning interface and health endpoint.</li>
+        </ul>
+    </section>
+
+    <section class="panel">
+        <p class="eyebrow">Loop</p>
+        <h2>Explicit control flow</h2>
+        <ol class="step-list">
+            <li>Load recent observable conversation history.</li>
+            <li>Send instructions, messages, and tool definitions to the Responses API or fake model.</li>
+            <li>Validate each requested tool call in application code.</li>
+            <li>Authorize the tool by role and require approval for side effects.</li>
+            <li>Persist tool outputs, approvals, runs, and step summaries.</li>
+            <li>Continue until there is a final response, an approval pause, an error, or a loop limit.</li>
+        </ol>
+    </section>
+</div>

@@ -1,0 +1,33 @@
+@inject AgentLearningLab.Web.Services.DemoIdentityService IdentityService
+@inject NavigationManager Navigation
+
+@if (IdentityService.IsEnabled)
+{
+    <div class="identity-switcher">
+        <label for="identity-select">Development Identity</label>
+        <select id="identity-select" value="@IdentityService.SelectedEmail" @onchange="OnChanged">
+            @foreach (var option in IdentityService.AvailableOptions)
+            {
+                <option value="@option.Email">@option.Email (@option.Label)</option>
+            }
+        </select>
+        <span class="identity-caption">Development-only switcher</span>
+    </div>
+}
+else
+{
+    <div class="identity-switcher identity-switcher-disabled">
+        <span>Development identity switching is unavailable outside Development.</span>
+    </div>
+}
+
+@code {
+    private void OnChanged(ChangeEventArgs args)
+    {
+        if (args.Value is string email)
+        {
+            IdentityService.SetSelectedEmail(email);
+            Navigation.Refresh();
+        }
+    }
+}

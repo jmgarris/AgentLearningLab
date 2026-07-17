@@ -1,0 +1,43 @@
+@page "/"
+@inject AgentLearningLab.Agent.ModelRuntimeInfo RuntimeInfo
+
+<PageTitle>AgentLearningLab</PageTitle>
+
+<section class="hero-panel">
+    <div class="hero-copy">
+        <p class="eyebrow">Educational Agent Lab</p>
+        <h1>Production-style agent mechanics, explained with runnable .NET code.</h1>
+        <p class="lead">
+            This lab demonstrates instructions, conversation state, custom tools, approvals, retrieval, authorization,
+            observability, and evaluations using a fictional flying-club operations assistant.
+        </p>
+        @if (RuntimeInfo.IsOffline)
+        {
+            <div class="mode-banner">Offline learning mode — responses are produced by a deterministic fake model.</div>
+        }
+        <div class="hero-actions">
+            <a class="primary-link" href="/agent">Open Agent Lab</a>
+            <a class="secondary-link" href="/architecture">Read Architecture</a>
+        </div>
+    </div>
+    <div class="hero-grid">
+        <div class="feature-card">
+            <h2>What It Teaches</h2>
+            <ul>
+                <li>Explicit agent loops instead of hidden orchestration</li>
+                <li>Read-only versus approval-gated side effects</li>
+                <li>Retrieval, persistence, and role-based authorization</li>
+                <li>Run traces, audit logging, and evaluation harnesses</li>
+            </ul>
+        </div>
+        <div class="feature-card">
+            <h2>Try These Prompts</h2>
+            <ul>
+                <li>What kinds of things can you help with?</li>
+                <li>What is the current status of N123AB?</li>
+                <li>How many tach hours remain before N123AB reaches its oil-change interval, and who should be notified?</li>
+                <li>How far in advance may a member reserve an aircraft?</li>
+            </ul>
+        </div>
+    </div>
+</section>

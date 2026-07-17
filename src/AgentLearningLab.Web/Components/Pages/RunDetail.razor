@@ -1,0 +1,53 @@
+@page "/runs/{Id:guid}"
+@using AgentLearningLab.Application.Abstractions
+@inject IAgentRunStore RunStore
+
+<PageTitle>Run Detail</PageTitle>
+
+@if (trace is null)
+{
+    <h1>Run not found</h1>
+}
+else
+{
+    <h1>Run Trace</h1>
+
+    <div class="panel detail-grid">
+        <div>
+            <p><strong>Run ID:</strong> @trace.RunId</p>
+            <p><strong>Conversation:</strong> @trace.ConversationId</p>
+            <p><strong>Correlation:</strong> @trace.CorrelationId</p>
+            <p><strong>User:</strong> @trace.UserEmail</p>
+            <p><strong>Model:</strong> @trace.ModelName</p>
+            <p><strong>Status:</strong> @trace.Status</p>
+        </div>
+        <div>
+            <p><strong>Started:</strong> @trace.StartedAtUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</p>
+            <p><strong>Completed:</strong> @trace.CompletedAtUtc?.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</p>
+            <p><strong>Error:</strong> @trace.ErrorCode</p>
+            <p><strong>Tokens:</strong> @trace.Usage?.TotalTokens</p>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Observable Events</h2>
+        <ol class="step-list">
+            @foreach (var step in trace.Steps)
+            {
+                <li>@step.Summary</li>
+            }
+        </ol>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public Guid Id { get; set; }
+
+    private RunTraceViewModel? trace;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        trace = await RunStore.GetRunTraceAsync(Id, CancellationToken.None);
+    }
+}
