@@ -14,11 +14,16 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ToolRegistry>();
         services.AddScoped<AgentRunner>();
 
-        services.AddSingleton(static serviceProvider =>
+        services.AddScoped(static serviceProvider =>
         {
             var openAiOptions = serviceProvider.GetRequiredService<IOptions<OpenAIOptions>>().Value;
             var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-            return new ModelRuntimeInfo(string.IsNullOrWhiteSpace(apiKey), openAiOptions.Model);
+            var apiKeyAvailable = !string.IsNullOrWhiteSpace(apiKey);
+            var preferenceStore = serviceProvider.GetService<IRuntimeModePreferenceStore>();
+            var selectedMode = preferenceStore?.GetPreferredMode(apiKeyAvailable)
+                ?? (apiKeyAvailable ? AgentExecutionMode.ApiKey : AgentExecutionMode.Offline);
+
+            return new ModelRuntimeInfo(selectedMode, openAiOptions.Model, apiKeyAvailable);
         });
 
         services.AddScoped<IModelClient>(serviceProvider =>
@@ -27,6 +32,11 @@ public static class ServiceCollectionExtensions
             if (runtime.IsOffline)
             {
                 return new FakeModelClient();
+            }
+
+            if (!runtime.IsApiKeyAvailable)
+            {
+                throw new InvalidOperationException("API key mode was selected, but OPENAI_API_KEY is not available for this app session.");
             }
 
             var options = serviceProvider.GetRequiredService<IOptions<OpenAIOptions>>();

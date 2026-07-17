@@ -15,7 +15,11 @@
     <main class="shell-main">
         @if (RuntimeInfo.IsOffline)
         {
-            <div class="mode-banner">Offline learning mode — responses are produced by a deterministic fake model.</div>
+            <div class="mode-banner">Offline learning mode - responses are produced by a deterministic fake model.</div>
+        }
+        else if (RuntimeInfo.IsUsingApiKey)
+        {
+            <div class="mode-banner api-mode-banner">API key mode - requests use the configured OpenAI model `@RuntimeInfo.ActiveModelName`.</div>
         }
 
         <article class="content-wrap">

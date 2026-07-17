@@ -13,10 +13,15 @@
         </p>
         @if (RuntimeInfo.IsOffline)
         {
-            <div class="mode-banner">Offline learning mode — responses are produced by a deterministic fake model.</div>
+            <div class="mode-banner">Offline learning mode - responses are produced by a deterministic fake model.</div>
+        }
+        else if (RuntimeInfo.IsUsingApiKey)
+        {
+            <div class="mode-banner api-mode-banner">API key mode is enabled for this session and will use `@RuntimeInfo.ActiveModelName`.</div>
         }
         <div class="hero-actions">
             <a class="primary-link" href="/agent">Open Agent Lab</a>
+            <a class="secondary-link" href="/settings">Runtime Settings</a>
             <a class="secondary-link" href="/architecture">Read Architecture</a>
         </div>
     </div>

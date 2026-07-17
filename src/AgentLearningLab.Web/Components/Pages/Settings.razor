@@ -1,0 +1,119 @@
+@page "/settings"
+@inject AgentLearningLab.Agent.ModelRuntimeInfo RuntimeInfo
+@inject AgentLearningLab.Agent.IRuntimeModePreferenceStore RuntimeModePreferenceStore
+
+<PageTitle>Settings</PageTitle>
+
+<h1>Runtime Settings</h1>
+
+<div class="settings-grid">
+    <section class="panel">
+        <p class="eyebrow">Execution Mode</p>
+        <h2>Choose how the agent responds</h2>
+        <p class="lead">
+            Use offline mode for deterministic local learning, or use the configured API key to call OpenAI directly for this session.
+        </p>
+
+        @if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <div class="error-banner">@errorMessage</div>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(successMessage))
+        {
+            <div class="success-banner">@successMessage</div>
+        }
+
+        <EditForm Model="settings" FormName="runtime-mode-form" OnValidSubmit="SaveAsync" class="settings-form">
+            <InputRadioGroup @bind-Value="settings.SelectedMode" Name="runtime-mode">
+                <div class="choice-list">
+                    <div class="choice-card @(settings.SelectedMode == AgentExecutionMode.Offline ? "selected" : null)">
+                        <label>
+                            <InputRadio Value="AgentExecutionMode.Offline" />
+                            <span>
+                                <strong>Offline mode</strong><br />
+                                Uses the deterministic fake model and avoids live API calls or charges.
+                            </span>
+                        </label>
+                    </div>
+
+                    <div class="choice-card @(settings.SelectedMode == AgentExecutionMode.ApiKey ? "selected" : null)">
+                        <label>
+                            <InputRadio Value="AgentExecutionMode.ApiKey" disabled="@(!RuntimeInfo.IsApiKeyAvailable)" />
+                            <span>
+                                <strong>API key mode</strong><br />
+                                Uses `OPENAI_API_KEY` with the configured model `@RuntimeInfo.ActiveModelName`.
+                            </span>
+                        </label>
+                    </div>
+                </div>
+            </InputRadioGroup>
+
+            <div class="settings-actions">
+                <button class="primary-button" type="submit">Save settings</button>
+                <span class="status-pill @(RuntimeInfo.IsApiKeyAvailable ? null : "warning")">
+                    @(RuntimeInfo.IsApiKeyAvailable ? "API key detected" : "OPENAI_API_KEY not available")
+                </span>
+            </div>
+        </EditForm>
+    </section>
+
+    <aside class="panel">
+        <p class="eyebrow">Current Session</p>
+        <h2>Active runtime summary</h2>
+
+        <p><strong>Current mode:</strong> @(RuntimeInfo.IsOffline ? "Offline" : "API key")</p>
+        <p><strong>Configured model:</strong> @RuntimeInfo.ActiveModelName</p>
+        <p><strong>API key available:</strong> @(RuntimeInfo.IsApiKeyAvailable ? "Yes" : "No")</p>
+
+        <div class="citation-box">
+            <h3>Notes</h3>
+            <ul>
+                <li>This setting applies to the current Blazor session.</li>
+                <li>Offline mode always uses the deterministic fake model.</li>
+                <li>API key mode still depends on your OpenAI project having access to the configured model.</li>
+            </ul>
+        </div>
+    </aside>
+</div>
+
+@code {
+    private readonly RuntimeSettingsInput settings = new();
+    private string? errorMessage;
+    private string? successMessage;
+
+    protected override void OnInitialized()
+    {
+        settings.SelectedMode = RuntimeInfo.SelectedMode;
+    }
+
+    private Task SaveAsync()
+    {
+        errorMessage = null;
+        successMessage = null;
+
+        if (settings.SelectedMode == AgentExecutionMode.Offline)
+        {
+            RuntimeInfo.UseOfflineMode();
+            RuntimeModePreferenceStore.Save(AgentExecutionMode.Offline);
+            successMessage = "Offline mode is now active for this session.";
+            return Task.CompletedTask;
+        }
+
+        if (!RuntimeInfo.TryUseApiKeyMode())
+        {
+            settings.SelectedMode = RuntimeInfo.SelectedMode;
+            errorMessage = "API key mode is unavailable because OPENAI_API_KEY is not set for this app session.";
+            return Task.CompletedTask;
+        }
+
+        RuntimeModePreferenceStore.Save(AgentExecutionMode.ApiKey);
+        successMessage = $"API key mode is now active for this session using {RuntimeInfo.ActiveModelName}.";
+        return Task.CompletedTask;
+    }
+
+    private sealed class RuntimeSettingsInput
+    {
+        public AgentExecutionMode SelectedMode { get; set; }
+    }
+}

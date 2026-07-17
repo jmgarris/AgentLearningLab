@@ -15,7 +15,9 @@ builder.Services.Configure<OpenAIOptions>(builder.Configuration.GetSection(OpenA
 builder.Services.Configure<AgentOptions>(builder.Configuration.GetSection(AgentOptions.SectionName));
 builder.Services.Configure<RetrievalOptions>(builder.Configuration.GetSection(RetrievalOptions.SectionName));
 builder.Services.Configure<ApprovalOptions>(builder.Configuration.GetSection(ApprovalOptions.SectionName));
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<DemoIdentityService>();
+builder.Services.AddScoped<AgentLearningLab.Agent.IRuntimeModePreferenceStore, RuntimeModePreferenceStore>();
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddAgentTools();
 builder.Services.AddAgentRuntime();
