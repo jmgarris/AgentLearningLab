@@ -1,8 +1,8 @@
 using AgentLearningLab.Agent;
-using AgentLearningLab.Application.AI;
 using AgentLearningLab.Application.Abstractions;
 using AgentLearningLab.Application.Configuration;
 using AgentLearningLab.Application.Identity;
+using AgentLearningLab.Agent.DependencyInjection;
 using AgentLearningLab.Infrastructure.DependencyInjection;
 using AgentLearningLab.Infrastructure.Persistence;
 using AgentLearningLab.Tools.DependencyInjection;
@@ -31,7 +31,8 @@ public sealed class IntegrationTestHost : IAsyncDisposable
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:DefaultConnection"] = $"Data Source={databasePath}",
-                ["OpenAI:Model"] = "gpt-5.6-terra",
+                ["OpenAI:Model"] = string.Empty,
+                ["Agent:DefaultExecutionMode"] = "Offline",
                 ["Agent:MaximumSteps"] = "8",
                 ["Agent:MaximumRecentMessages"] = "5",
                 ["Approval:ExpirationMinutes"] = "15",
@@ -45,14 +46,10 @@ public sealed class IntegrationTestHost : IAsyncDisposable
         services.Configure<AgentOptions>(configuration.GetSection(AgentOptions.SectionName));
         services.Configure<ApprovalOptions>(configuration.GetSection(ApprovalOptions.SectionName));
         services.Configure<RetrievalOptions>(configuration.GetSection(RetrievalOptions.SectionName));
+        services.AddSingleton<IConfiguration>(configuration);
         services.AddInfrastructure(configuration);
         services.AddAgentTools();
-        services.AddSingleton(new AgentDefinition("ClubOps Learning Agent", "Test instructions"));
-        services.AddSingleton<ClubOpsAgent>();
-        services.AddSingleton(new ModelRuntimeInfo(true, "gpt-5.6-terra"));
-        services.AddScoped<IModelClient, FakeModelClient>();
-        services.AddScoped<ToolRegistry>();
-        services.AddScoped<AgentRunner>();
+        services.AddAgentRuntime();
 
         var provider = services.BuildServiceProvider();
         using (var scope = provider.CreateScope())

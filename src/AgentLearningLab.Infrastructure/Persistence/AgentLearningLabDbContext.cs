@@ -53,6 +53,10 @@ public sealed class AgentLearningLabDbContext(DbContextOptions<AgentLearningLabD
             .HasIndex(x => new { x.AgentRunId, x.ToolCallId })
             .IsUnique();
 
+        modelBuilder.Entity<AgentMessage>()
+            .HasIndex(x => new { x.ConversationId, x.SequenceNumber })
+            .IsUnique();
+
         modelBuilder.Entity<OutboxMessage>()
             .HasOne(x => x.RecipientMember)
             .WithMany()

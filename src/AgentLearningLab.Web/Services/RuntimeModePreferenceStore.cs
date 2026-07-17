@@ -1,41 +1,54 @@
 using AgentLearningLab.Agent;
-using Microsoft.AspNetCore.Http;
+using AgentLearningLab.Application.Configuration;
+using Microsoft.JSInterop;
 
 namespace AgentLearningLab.Web.Services;
 
-public sealed class RuntimeModePreferenceStore(IHttpContextAccessor httpContextAccessor) : IRuntimeModePreferenceStore
+public sealed class RuntimeModePreferenceStore(IJSRuntime jsRuntime) : IRuntimeModePreferenceStore
 {
-    private const string CookieName = "agent-learning-lab-runtime-mode";
+    private const string StorageKey = "agent-learning-lab.runtime-mode";
 
-    public AgentExecutionMode GetPreferredMode(bool apiKeyAvailable)
+    public async ValueTask<AgentExecutionMode?> LoadAsync(CancellationToken cancellationToken)
     {
-        var cookieValue = httpContextAccessor.HttpContext?.Request.Cookies[CookieName];
-        if (string.Equals(cookieValue, "api-key", StringComparison.OrdinalIgnoreCase) && apiKeyAvailable)
+        try
         {
-            return AgentExecutionMode.ApiKey;
-        }
+            var storedValue = await jsRuntime.InvokeAsync<string?>(
+                "localStorage.getItem",
+                cancellationToken,
+                StorageKey);
 
-        return AgentExecutionMode.Offline;
+            return storedValue?.ToLowerInvariant() switch
+            {
+                "offline" => AgentExecutionMode.Offline,
+                "api-key" => AgentExecutionMode.ApiKey,
+                _ => null
+            };
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+        catch (JSDisconnectedException)
+        {
+            return null;
+        }
     }
 
-    public void Save(AgentExecutionMode mode)
+    public async ValueTask SaveAsync(AgentExecutionMode mode, CancellationToken cancellationToken)
     {
-        var httpContext = httpContextAccessor.HttpContext;
-        if (httpContext is null)
+        try
         {
-            return;
+            await jsRuntime.InvokeVoidAsync(
+                "localStorage.setItem",
+                cancellationToken,
+                StorageKey,
+                mode == AgentExecutionMode.ApiKey ? "api-key" : "offline");
         }
-
-        httpContext.Response.Cookies.Append(
-            CookieName,
-            mode == AgentExecutionMode.ApiKey ? "api-key" : "offline",
-            new CookieOptions
-            {
-                HttpOnly = false,
-                IsEssential = true,
-                SameSite = SameSiteMode.Lax,
-                Secure = httpContext.Request.IsHttps,
-                Expires = DateTimeOffset.UtcNow.AddDays(30)
-            });
+        catch (InvalidOperationException)
+        {
+        }
+        catch (JSDisconnectedException)
+        {
+        }
     }
 }

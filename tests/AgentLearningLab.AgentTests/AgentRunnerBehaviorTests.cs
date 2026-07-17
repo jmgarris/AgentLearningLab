@@ -80,7 +80,7 @@ public sealed class AgentRunnerBehaviorTests
         var result = await runner.RunAsync(null, "What was the cylinder compression reading on N123AB last annual?", user, CancellationToken.None);
 
         result.Status.Should().Be(AgentRunStatus.Completed);
-        result.FinalText.Should().Contain("can’t find");
+        result.FinalText.Should().Contain("can't find");
     }
 
     [Test]

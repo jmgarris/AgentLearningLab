@@ -19,7 +19,9 @@ public sealed class ConversationStore(AgentLearningLabDbContext dbContext) : ICo
         {
             var existing = await dbContext.AgentConversations
                 .FirstOrDefaultAsync(
-                    x => x.Id == conversationId.Value && x.OwnerEmail == user.Email,
+                    x => x.Id == conversationId.Value
+                        && x.OwnerEmail == user.Email
+                        && !x.IsArchived,
                     cancellationToken);
 
             if (existing is not null)
@@ -31,7 +33,8 @@ public sealed class ConversationStore(AgentLearningLabDbContext dbContext) : ICo
         var conversation = new AgentConversation
         {
             OwnerEmail = user.Email,
-            Title = $"Conversation {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC"
+            Title = $"Conversation {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC",
+            IsArchived = false
         };
 
         dbContext.AgentConversations.Add(conversation);
@@ -45,7 +48,7 @@ public sealed class ConversationStore(AgentLearningLabDbContext dbContext) : ICo
         CancellationToken cancellationToken)
     {
         var conversations = await dbContext.AgentConversations
-            .Where(x => x.OwnerEmail == ownerEmail)
+            .Where(x => x.OwnerEmail == ownerEmail && !x.IsArchived)
             .Select(x => new ConversationSummaryViewModel(x.Id, x.Title, x.UpdatedAtUtc))
             .ToListAsync(cancellationToken);
 
@@ -59,18 +62,14 @@ public sealed class ConversationStore(AgentLearningLabDbContext dbContext) : ICo
         int maximumMessages,
         CancellationToken cancellationToken)
     {
-        // SQLite does not natively sort DateTimeOffset values server-side in a way EF can translate
-        // reliably for this query, so we load the conversation messages and apply the recency window
-        // in memory. The configured conversation window is intentionally small for this sample.
-        var messages = await dbContext.AgentMessages
+        var newestFirst = await dbContext.AgentMessages
             .Where(x => x.ConversationId == conversationId)
+            .OrderByDescending(x => x.SequenceNumber)
+            .Take(maximumMessages)
             .ToListAsync(cancellationToken);
 
-        return messages
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .Take(maximumMessages)
-            .OrderBy(x => x.CreatedAtUtc)
-            .ToList();
+        newestFirst.Reverse();
+        return newestFirst;
     }
 
     public async Task AddMessageAsync(
@@ -82,9 +81,14 @@ public sealed class ConversationStore(AgentLearningLabDbContext dbContext) : ICo
         string? structuredDataJson,
         CancellationToken cancellationToken)
     {
+        var nextSequenceNumber = (await dbContext.AgentMessages
+            .Where(x => x.ConversationId == conversationId)
+            .MaxAsync(x => (long?)x.SequenceNumber, cancellationToken) ?? 0) + 1;
+
         dbContext.AgentMessages.Add(new AgentMessage
         {
             ConversationId = conversationId,
+            SequenceNumber = nextSequenceNumber,
             Kind = kind,
             Sender = sender,
             Content = content,
@@ -110,6 +114,7 @@ public sealed class ConversationStore(AgentLearningLabDbContext dbContext) : ICo
     {
         var transcript = await dbContext.AgentMessages
             .Where(x => x.ConversationId == conversationId)
+            .OrderBy(x => x.SequenceNumber)
             .Select(x => new ConversationTranscriptItem(
                 x.Id,
                 x.Kind,
@@ -119,18 +124,25 @@ public sealed class ConversationStore(AgentLearningLabDbContext dbContext) : ICo
                 x.ToolName))
             .ToListAsync(cancellationToken);
 
-        return transcript
-            .OrderBy(x => x.CreatedAtUtc)
-            .ToList();
+        return transcript;
     }
 
-    public async Task ClearConversationAsync(Guid conversationId, CancellationToken cancellationToken)
+    public async Task ArchiveConversationAsync(
+        Guid conversationId,
+        AuthenticatedUserContext user,
+        CancellationToken cancellationToken)
     {
-        var messages = await dbContext.AgentMessages
-            .Where(x => x.ConversationId == conversationId)
-            .ToListAsync(cancellationToken);
+        var conversation = await dbContext.AgentConversations
+            .FirstOrDefaultAsync(
+                x => x.Id == conversationId && x.OwnerEmail == user.Email,
+                cancellationToken);
 
-        dbContext.AgentMessages.RemoveRange(messages);
+        if (conversation is null)
+        {
+            throw new InvalidOperationException("Conversation not found for the current user.");
+        }
+
+        conversation.IsArchived = true;
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 }

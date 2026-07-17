@@ -11,24 +11,38 @@ using System.Text.Json;
 
 namespace AgentLearningLab.Agent;
 
-public sealed class OpenAIResponsesModelClient : IModelClient
+public sealed class OpenAIResponsesModelClient : IApiModelClient
 {
+    private readonly string _apiKey;
     private readonly ILogger<OpenAIResponsesModelClient> _logger;
     private readonly OpenAIOptions _options;
-    private readonly ResponsesClient _responsesClient;
+    private readonly ResponsesClient? _responsesClient;
 
     public OpenAIResponsesModelClient(
         string apiKey,
         IOptions<OpenAIOptions> options,
         ILogger<OpenAIResponsesModelClient> logger)
     {
+        _apiKey = apiKey;
         _options = options.Value;
         _logger = logger;
-        _responsesClient = new ResponsesClient(new ApiKeyCredential(apiKey));
+        _responsesClient = string.IsNullOrWhiteSpace(apiKey)
+            ? null
+            : new ResponsesClient(new ApiKeyCredential(apiKey));
     }
 
     public async Task<ModelTurnResult> CreateTurnAsync(ModelTurnRequest request, CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(_apiKey))
+        {
+            throw new InvalidOperationException("OPENAI_API_KEY is not set. Switch back to Offline mode or configure an API key.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Model))
+        {
+            throw new InvalidOperationException("OpenAI model is not configured. Set OpenAI:Model or OpenAI__Model before using API key mode.");
+        }
+
         const int maxAttempts = 3;
 
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
@@ -54,8 +68,14 @@ public sealed class OpenAIResponsesModelClient : IModelClient
                     options.Tools.Add(tool);
                 }
 
-                var response = await _responsesClient.CreateResponseAsync(options, cancellationToken);
+                var response = await _responsesClient!.CreateResponseAsync(options, cancellationToken);
                 return MapResponse(response);
+            }
+            catch (Exception ex) when (IsModelAccessError(ex, request.Model))
+            {
+                throw new InvalidOperationException(
+                    $"The configured OpenAI project does not have access to model '{request.Model}'. Choose a different model or switch to Offline mode.",
+                    ex);
             }
             catch (Exception ex) when (attempt < maxAttempts && IsTransient(ex))
             {
@@ -79,6 +99,15 @@ public sealed class OpenAIResponsesModelClient : IModelClient
             || message.Contains("502", StringComparison.OrdinalIgnoreCase)
             || message.Contains("503", StringComparison.OrdinalIgnoreCase)
             || message.Contains("504", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsModelAccessError(Exception exception, string modelName)
+    {
+        var message = exception.Message;
+        return message.Contains("model_not_found", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("does not have access to model", StringComparison.OrdinalIgnoreCase)
+            || (message.Contains(modelName, StringComparison.OrdinalIgnoreCase)
+                && message.Contains("invalid_request_error", StringComparison.OrdinalIgnoreCase));
     }
 
     private static ResponseItem MapInputItem(ModelConversationItem item)

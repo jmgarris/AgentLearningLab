@@ -9,6 +9,8 @@ public sealed class AgentMessage : AuditableEntity
 
     public AgentConversation? Conversation { get; set; }
 
+    public long SequenceNumber { get; set; }
+
     public AgentMessageKind Kind { get; set; }
 
     public string Sender { get; set; } = string.Empty;

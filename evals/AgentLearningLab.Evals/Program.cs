@@ -57,11 +57,14 @@ services.AddLogging(builder =>
 services.AddSingleton<IConfiguration>(configuration);
 services.Configure<OpenAIOptions>(options =>
 {
-    options.Model = "gpt-5.6-terra";
+    options.Model = string.Empty;
     options.TimeoutSeconds = 60;
 });
 services.Configure<AgentOptions>(options =>
 {
+    options.DefaultExecutionMode = arguments.UseLiveModel
+        ? AgentExecutionMode.ApiKey
+        : AgentExecutionMode.Offline;
     options.MaximumSteps = 8;
     options.MaximumRecentMessages = 20;
 });

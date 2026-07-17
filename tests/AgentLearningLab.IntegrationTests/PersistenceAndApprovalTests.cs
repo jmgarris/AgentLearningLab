@@ -109,4 +109,42 @@ public sealed class PersistenceAndApprovalTests
 
         recentRuns.Should().Contain(x => x.RunId == run.RunId);
     }
+
+    [Test]
+    public async Task ArchiveConversation_ShouldHideItAndForceNextRunToStartFresh()
+    {
+        await using var host = await IntegrationTestHost.CreateAsync();
+        using var scope = host.Services.CreateScope();
+        var runner = scope.ServiceProvider.GetRequiredService<AgentRunner>();
+        var conversations = scope.ServiceProvider.GetRequiredService<IConversationStore>();
+        var member = await host.GetUserAsync("member@example.test");
+
+        var first = await runner.RunAsync(null, "What is the current status of N123AB?", member, CancellationToken.None);
+
+        await conversations.ArchiveConversationAsync(first.ConversationId, member, CancellationToken.None);
+
+        var activeConversations = await conversations.ListConversationsAsync(member.Email, CancellationToken.None);
+        activeConversations.Should().NotContain(x => x.ConversationId == first.ConversationId);
+
+        var second = await runner.RunAsync(null, "What is the status of N456CD?", member, CancellationToken.None);
+        second.ConversationId.Should().NotBe(first.ConversationId);
+
+        var newConversationMessages = await conversations.GetRecentMessagesAsync(second.ConversationId, 20, CancellationToken.None);
+        newConversationMessages.Select(x => x.Content).Should().NotContain(x => x.Contains("N123AB", StringComparison.Ordinal));
+    }
+
+    [Test]
+    public async Task ArchiveConversation_ShouldRejectRequestsFromAnotherUser()
+    {
+        await using var host = await IntegrationTestHost.CreateAsync();
+        using var scope = host.Services.CreateScope();
+        var conversations = scope.ServiceProvider.GetRequiredService<IConversationStore>();
+        var owner = await host.GetUserAsync("member@example.test");
+        var otherUser = await host.GetUserAsync("admin@example.test");
+        var conversation = await conversations.GetOrCreateConversationAsync(null, owner, CancellationToken.None);
+
+        var action = async () => await conversations.ArchiveConversationAsync(conversation.Id, otherUser, CancellationToken.None);
+
+        await action.Should().ThrowAsync<InvalidOperationException>();
+    }
 }

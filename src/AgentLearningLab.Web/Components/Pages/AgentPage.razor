@@ -1,4 +1,5 @@
 @page "/agent"
+@implements IDisposable
 @using AgentLearningLab.Application.Abstractions
 @using AgentLearningLab.Domain.Enums
 @inject AgentLearningLab.Agent.AgentRunner AgentRunner
@@ -30,7 +31,7 @@ else
                             <option value="@conversation.ConversationId.ToString()">@conversation.Title</option>
                         }
                     </select>
-                    <button class="quiet-button" @onclick="ClearConversationAsync" disabled="@busy">Clear conversation</button>
+                    <button type="button" class="quiet-button" @onclick="ClearConversationAsync" disabled="@busy">Clear conversation</button>
                 </div>
             </div>
 
@@ -46,10 +47,15 @@ else
                 <div class="error-banner">@errorMessage</div>
             }
 
+            @if (!string.IsNullOrWhiteSpace(successMessage))
+            {
+                <div class="success-banner">@successMessage</div>
+            }
+
             <div class="transcript">
                 @if (transcript.Count == 0)
                 {
-                    <div class="empty-state">Start with a prompt like “What is the current status of N123AB?”</div>
+                    <div class="empty-state">Start with a prompt like "What is the current status of N123AB?"</div>
                 }
                 else
                 {
@@ -68,8 +74,12 @@ else
 
             <EditForm Model="this" FormName="agent-message-form" OnValidSubmit="SendAsync">
                 <div class="composer">
-                    <InputTextArea class="composer-input" @bind-Value="messageText" />
-                    <button class="primary-button" type="submit" disabled="@busy">Send</button>
+                    <textarea
+                        class="composer-input"
+                        @bind="messageText"
+                        @bind:event="oninput"
+                        placeholder="Ask about a fictional aircraft, club rule, or maintenance workflow..."></textarea>
+                    <button class="primary-button" type="submit" disabled="@(!CanSend)">Send</button>
                 </div>
             </EditForm>
         </section>
@@ -128,41 +138,76 @@ else
 }
 
 @code {
+    private readonly CancellationTokenSource componentCts = new();
     private AuthenticatedUserContext? currentUser;
-    private string messageText = "What is the current status of N123AB?";
+    private string messageText = string.Empty;
     private string? errorMessage;
+    private string? successMessage;
     private bool busy;
     private string selectedConversationIdString = string.Empty;
+    private string? activeUserEmail;
     private IReadOnlyList<ConversationSummaryViewModel> conversations = [];
     private IReadOnlyList<ConversationTranscriptItem> transcript = [];
     private AgentRunResult? latestResult;
     private IReadOnlyList<AgentStepSummary> latestSteps = [];
 
+    private bool CanSend => !busy && !string.IsNullOrWhiteSpace(messageText);
+
     protected override async Task OnInitializedAsync()
     {
-        await RefreshAsync();
+        await RefreshAsync(resetConversationStateWhenUserChanges: true);
     }
 
-    private async Task RefreshAsync()
+    private async Task RefreshAsync(bool resetConversationStateWhenUserChanges = false)
     {
-        currentUser = await IdentityService.GetCurrentUserAsync(CancellationToken.None);
-        conversations = await ConversationStore.ListConversationsAsync(currentUser.Email, CancellationToken.None);
+        var user = await IdentityService.GetCurrentUserAsync(componentCts.Token);
+        var userChanged = !string.Equals(activeUserEmail, user.Email, StringComparison.OrdinalIgnoreCase);
 
-        if (!string.IsNullOrWhiteSpace(selectedConversationIdString) && Guid.TryParse(selectedConversationIdString, out var conversationId))
+        currentUser = user;
+        activeUserEmail = user.Email;
+
+        if (userChanged && resetConversationStateWhenUserChanges)
         {
-            transcript = await ConversationStore.GetTranscriptAsync(conversationId, CancellationToken.None);
+            ResetConversationState(clearMessageText: false);
         }
+
+        conversations = await ConversationStore.ListConversationsAsync(currentUser.Email, componentCts.Token);
+        await LoadSelectedConversationAsync();
+    }
+
+    private async Task LoadSelectedConversationAsync()
+    {
+        if (!Guid.TryParse(selectedConversationIdString, out var conversationId))
+        {
+            transcript = [];
+            return;
+        }
+
+        if (!conversations.Any(x => x.ConversationId == conversationId))
+        {
+            ResetConversationState(clearMessageText: false);
+            return;
+        }
+
+        transcript = await ConversationStore.GetTranscriptAsync(conversationId, componentCts.Token);
     }
 
     private async Task SendAsync()
     {
-        if (currentUser is null || string.IsNullOrWhiteSpace(messageText))
+        if (currentUser is null)
+        {
+            return;
+        }
+
+        var trimmedMessage = messageText.Trim();
+        if (string.IsNullOrWhiteSpace(trimmedMessage))
         {
             return;
         }
 
         busy = true;
         errorMessage = null;
+        successMessage = null;
 
         try
         {
@@ -170,11 +215,14 @@ else
                 ? parsedConversationId
                 : null;
 
-            latestResult = await AgentRunner.RunAsync(conversationId, messageText, currentUser, CancellationToken.None);
+            latestResult = await AgentRunner.RunAsync(conversationId, trimmedMessage, currentUser, componentCts.Token);
             selectedConversationIdString = latestResult.ConversationId.ToString();
             latestSteps = latestResult.Steps;
             messageText = string.Empty;
             await RefreshAsync();
+        }
+        catch (OperationCanceledException) when (componentCts.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
@@ -195,12 +243,16 @@ else
 
         busy = true;
         errorMessage = null;
+        successMessage = null;
 
         try
         {
-            latestResult = await AgentRunner.ApproveAsync(latestResult.PendingApproval.ApprovalRequestId, currentUser, CancellationToken.None);
+            latestResult = await AgentRunner.ApproveAsync(latestResult.PendingApproval.ApprovalRequestId, currentUser, componentCts.Token);
             latestSteps = latestResult.Steps;
             await RefreshAsync();
+        }
+        catch (OperationCanceledException) when (componentCts.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
@@ -221,12 +273,16 @@ else
 
         busy = true;
         errorMessage = null;
+        successMessage = null;
 
         try
         {
-            latestResult = await AgentRunner.RejectAsync(latestResult.PendingApproval.ApprovalRequestId, currentUser, CancellationToken.None);
+            latestResult = await AgentRunner.RejectAsync(latestResult.PendingApproval.ApprovalRequestId, currentUser, componentCts.Token);
             latestSteps = latestResult.Steps;
             await RefreshAsync();
+        }
+        catch (OperationCanceledException) when (componentCts.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
@@ -240,18 +296,82 @@ else
 
     private async Task ClearConversationAsync()
     {
-        if (Guid.TryParse(selectedConversationIdString, out var conversationId))
+        if (busy)
         {
-            await ConversationStore.ClearConversationAsync(conversationId, CancellationToken.None);
-            transcript = [];
-            latestResult = null;
-            latestSteps = [];
+            return;
+        }
+
+        errorMessage = null;
+
+        if (currentUser is null)
+        {
+            return;
+        }
+
+        if (!Guid.TryParse(selectedConversationIdString, out var conversationId))
+        {
+            ResetConversationState(
+                clearMessageText: true,
+                newSuccessMessage: "Conversation cleared. Your next message will start a new conversation.");
+            return;
+        }
+
+        busy = true;
+        successMessage = null;
+
+        try
+        {
+            await ConversationStore.ArchiveConversationAsync(conversationId, currentUser, componentCts.Token);
+            ResetConversationState(
+                clearMessageText: true,
+                newSuccessMessage: "Conversation cleared. Your next message will start a new conversation.");
             await RefreshAsync();
+        }
+        catch (OperationCanceledException) when (componentCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            busy = false;
         }
     }
 
     private async Task HandleConversationChangedAsync()
     {
-        await RefreshAsync();
+        errorMessage = null;
+        successMessage = null;
+        latestResult = null;
+        latestSteps = [];
+
+        await LoadSelectedConversationAsync();
+    }
+
+    private void ResetConversationState(bool clearMessageText, string? newSuccessMessage = null)
+    {
+        selectedConversationIdString = string.Empty;
+        transcript = [];
+        latestResult = null;
+        latestSteps = [];
+        errorMessage = null;
+        successMessage = newSuccessMessage;
+
+        if (clearMessageText)
+        {
+            messageText = string.Empty;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (!componentCts.IsCancellationRequested)
+        {
+            componentCts.Cancel();
+        }
+
+        componentCts.Dispose();
     }
 }

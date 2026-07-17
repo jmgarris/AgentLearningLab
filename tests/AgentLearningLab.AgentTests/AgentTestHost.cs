@@ -1,12 +1,11 @@
 using AgentLearningLab.Agent;
-using AgentLearningLab.Application.AI;
 using AgentLearningLab.Application.Abstractions;
 using AgentLearningLab.Application.Configuration;
 using AgentLearningLab.Application.Identity;
 using AgentLearningLab.Infrastructure.DependencyInjection;
 using AgentLearningLab.Infrastructure.Persistence;
+using AgentLearningLab.Agent.DependencyInjection;
 using AgentLearningLab.Tools.DependencyInjection;
-using AgentLearningLab.Domain.Enums;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -39,11 +38,12 @@ public sealed class AgentTestHost : IAsyncDisposable
         services.AddLogging(builder => builder.SetMinimumLevel(LogLevel.Debug));
         services.Configure<OpenAIOptions>(options =>
         {
-            options.Model = "gpt-5.6-terra";
+            options.Model = string.Empty;
             options.TimeoutSeconds = 60;
         });
         services.Configure<AgentOptions>(options =>
         {
+            options.DefaultExecutionMode = AgentExecutionMode.Offline;
             options.MaximumSteps = 8;
             options.MaximumRecentMessages = 20;
         });
@@ -52,12 +52,7 @@ public sealed class AgentTestHost : IAsyncDisposable
         services.AddSingleton<IConfiguration>(configuration);
         services.AddInfrastructure(configuration);
         services.AddAgentTools();
-        services.AddSingleton(new AgentDefinition("ClubOps Learning Agent", "Test instructions"));
-        services.AddSingleton<ClubOpsAgent>();
-        services.AddSingleton(new ModelRuntimeInfo(true, "gpt-5.6-terra"));
-        services.AddScoped<IModelClient, FakeModelClient>();
-        services.AddScoped<ToolRegistry>();
-        services.AddScoped<AgentRunner>();
+        services.AddAgentRuntime();
 
         var provider = services.BuildServiceProvider();
 

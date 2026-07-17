@@ -1,4 +1,4 @@
-namespace AgentLearningLab.Agent;
+namespace AgentLearningLab.Application.Configuration;
 
 public enum AgentExecutionMode
 {

@@ -8,6 +8,8 @@ public sealed class AgentConversation : AuditableEntity
 
     public string Title { get; set; } = string.Empty;
 
+    public bool IsArchived { get; set; }
+
     public ICollection<AgentMessage> Messages { get; set; } = [];
 
     public ICollection<AgentRun> Runs { get; set; } = [];

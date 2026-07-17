@@ -19,7 +19,7 @@ The sample uses a fictional flying-club operations assistant named `ClubOps Lear
 - behavior-focused evaluations
 - loop limits and failure handling
 
-The default OpenAI model setting is `gpt-5.6-terra`, which was verified against the official OpenAI model guidance on July 17, 2026. If `OPENAI_API_KEY` is not set, the app runs in deterministic offline learning mode instead.
+Offline mode is the safe default for this learning lab, even when `OPENAI_API_KEY` exists. The app only uses the live OpenAI client after a user explicitly selects API Key mode on the Runtime Settings page and a model is configured.
 
 ## Prerequisites
 
@@ -58,6 +58,8 @@ docs/
 
 ## Offline startup
 
+Offline mode is the default startup behavior. The Runtime Settings page can later switch the current Blazor session to API Key mode when both an API key and `OpenAI__Model` are configured.
+
 Do not set `OPENAI_API_KEY`. Then run:
 
 ```powershell
@@ -80,6 +82,13 @@ If the development port differs on your machine, use the URL printed by ASP.NET 
 
 ## Real OpenAI API startup
 
+Set both:
+
+- `OPENAI_API_KEY`
+- `OpenAI__Model`
+
+The configured model name is not guaranteed to be available to every OpenAI project. If the project lacks access, the agent page will show a clear runtime error and you can switch back to Offline mode immediately.
+
 Set the key for the current PowerShell session without echoing it:
 
 ```powershell
@@ -93,13 +102,19 @@ finally {
 }
 ```
 
+Set the model for the same session:
+
+```powershell
+$env:OpenAI__Model = "your-project-accessible-model"
+```
+
 Then start the app:
 
 ```powershell
 dotnet run --project .\src\AgentLearningLab.Web
 ```
 
-The offline banner should disappear, and the same `AgentRunner` will use `OpenAIResponsesModelClient`.
+Open `/settings` and select API Key mode. The setting takes effect immediately for subsequent turns in the current Blazor session, and the selected mode is persisted in browser `localStorage`. The API key itself is never stored in the browser.
 
 ## Health check
 
@@ -115,8 +130,11 @@ It returns JSON with app and database readiness.
 
 - `What kinds of things can you help with?`
 - `What is the current status of N123AB?`
+- `What is the status of N456CD?`
+- `Tell me about N456CD.`
 - `How many tach hours remain before N123AB reaches its oil-change interval, and who should be notified?`
 - `How far in advance may a member reserve an aircraft?`
+- `Who is the maintenance officer?`
 - `Send the maintenance officer a notice that N123AB is approaching its oil change.`
 - `What was the cylinder compression reading on N123AB last annual?`
 - `Change N456CD to Available`
@@ -186,8 +204,18 @@ Those migration commands are included as guidance only and were not part of the 
 - no real email is sent
 - seeded data is synthetic only
 
+## Runtime behavior notes
+
+- Offline mode is always the default configured execution mode unless you intentionally change `Agent:DefaultExecutionMode`.
+- The Runtime Settings page changes the client used for subsequent model turns in the current session.
+- The saved runtime-mode preference is browser-local, not application-wide.
+- Clear Conversation archives the current conversation from the active selector and starts the next message in a fresh conversation.
+- Archived conversation run records remain in the database so the educational audit trail is preserved.
+
 ## Troubleshooting
 
+- If API Key mode is unavailable, check both `OPENAI_API_KEY` and `OpenAI__Model`.
+- If you ran an older version of the sample before these schema updates, the startup initializer may recreate the local SQLite database so the app can add the new conversation columns safely.
 - If the app stays in offline mode, confirm `OPENAI_API_KEY` is set in the same PowerShell session where you start the app.
 - If SQLite file locking appears after abrupt test interruption, delete `src/AgentLearningLab.Web/App_Data/agent-learning-lab.db` and rerun the app.
 - If `dotnet run` chooses a different port, use the exact URL printed in the startup logs.

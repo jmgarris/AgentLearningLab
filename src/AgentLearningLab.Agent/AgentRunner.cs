@@ -20,7 +20,7 @@ public sealed class AgentRunner
     private readonly IApprovalService _approvalService;
     private readonly IConversationStore _conversationStore;
     private readonly IAgentRunStore _runStore;
-    private readonly IModelClient _modelClient;
+    private readonly IModelClientSelector _modelClientSelector;
     private readonly ModelRuntimeInfo _runtimeInfo;
     private readonly ToolRegistry _toolRegistry;
     private readonly ILogger<AgentRunner> _logger;
@@ -29,7 +29,7 @@ public sealed class AgentRunner
         ClubOpsAgent agent,
         IConversationStore conversationStore,
         IAgentRunStore runStore,
-        IModelClient modelClient,
+        IModelClientSelector modelClientSelector,
         ToolRegistry toolRegistry,
         IApprovalService approvalService,
         IOptions<AgentOptions> agentOptions,
@@ -39,7 +39,7 @@ public sealed class AgentRunner
         _agent = agent;
         _conversationStore = conversationStore;
         _runStore = runStore;
-        _modelClient = modelClient;
+        _modelClientSelector = modelClientSelector;
         _toolRegistry = toolRegistry;
         _approvalService = approvalService;
         _agentOptions = agentOptions.Value;
@@ -72,7 +72,7 @@ public sealed class AgentRunner
             conversation.Id,
             correlationId,
             user.Email,
-            _runtimeInfo.ActiveModelName,
+            _runtimeInfo.CurrentModelLabel,
             DateTimeOffset.UtcNow,
             cancellationToken);
 
@@ -267,7 +267,7 @@ public sealed class AgentRunner
                 cancellationToken);
 
             var request = new ModelTurnRequest(
-                _runtimeInfo.ActiveModelName,
+                _runtimeInfo.CurrentModelLabel,
                 _agent.Definition.Instructions,
                 BuildInputItems(recentMessages),
                 _toolRegistry.GetModelToolDefinitions());
@@ -275,7 +275,8 @@ public sealed class AgentRunner
             _logger.LogInformation("Starting agent step {StepNumber}", stepNumber);
 
             var startedAtUtc = DateTimeOffset.UtcNow;
-            var modelResult = await _modelClient.CreateTurnAsync(request, cancellationToken);
+            var modelClient = _modelClientSelector.GetCurrentClient();
+            var modelResult = await modelClient.CreateTurnAsync(request, cancellationToken);
 
             if (modelResult.ToolCalls.Count == 0)
             {

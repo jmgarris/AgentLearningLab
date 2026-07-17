@@ -2,6 +2,7 @@ using AgentLearningLab.Application.Common;
 using AgentLearningLab.Domain.Entities;
 using AgentLearningLab.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using System.Data.Common;
 
 namespace AgentLearningLab.Infrastructure.Persistence;
 
@@ -9,6 +10,11 @@ public sealed class LabDbInitializer(AgentLearningLabDbContext dbContext, ISyste
 {
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
+        if (await RequiresSchemaRecreationAsync(cancellationToken))
+        {
+            await dbContext.Database.EnsureDeletedAsync(cancellationToken);
+        }
+
         await dbContext.Database.EnsureCreatedAsync(cancellationToken);
 
         if (await dbContext.Aircraft.AnyAsync(cancellationToken))
@@ -104,6 +110,71 @@ public sealed class LabDbInitializer(AgentLearningLabDbContext dbContext, ISyste
         dbContext.KnowledgeDocuments.AddRange(CreateKnowledgeDocuments(now));
 
         await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<bool> RequiresSchemaRecreationAsync(CancellationToken cancellationToken)
+    {
+        if (!await dbContext.Database.CanConnectAsync(cancellationToken))
+        {
+            return false;
+        }
+
+        await using var connection = dbContext.Database.GetDbConnection();
+        await connection.OpenAsync(cancellationToken);
+
+        try
+        {
+            if (!await TableExistsAsync(connection, "AgentConversations", cancellationToken)
+                || !await TableExistsAsync(connection, "AgentMessages", cancellationToken))
+            {
+                return false;
+            }
+
+            var conversationColumns = await GetColumnNamesAsync(connection, "AgentConversations", cancellationToken);
+            var messageColumns = await GetColumnNamesAsync(connection, "AgentMessages", cancellationToken);
+
+            return !conversationColumns.Contains("IsArchived", StringComparer.OrdinalIgnoreCase)
+                || !messageColumns.Contains("SequenceNumber", StringComparer.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await connection.CloseAsync();
+        }
+    }
+
+    private static async Task<bool> TableExistsAsync(
+        DbConnection connection,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $tableName;";
+
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "$tableName";
+        parameter.Value = tableName;
+        command.Parameters.Add(parameter);
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result) > 0;
+    }
+
+    private static async Task<HashSet<string>> GetColumnNamesAsync(
+        DbConnection connection,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info(\"{tableName}\");";
+
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            columns.Add(reader.GetString(1));
+        }
+
+        return columns;
     }
 
     private static IReadOnlyList<KnowledgeDocument> CreateKnowledgeDocuments(DateTimeOffset now)

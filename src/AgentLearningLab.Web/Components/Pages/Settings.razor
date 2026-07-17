@@ -39,10 +39,10 @@
 
                     <div class="choice-card @(settings.SelectedMode == AgentExecutionMode.ApiKey ? "selected" : null)">
                         <label>
-                            <InputRadio Value="AgentExecutionMode.ApiKey" disabled="@(!RuntimeInfo.IsApiKeyAvailable)" />
+                            <InputRadio Value="AgentExecutionMode.ApiKey" disabled="@(!RuntimeInfo.IsApiModeAvailable)" />
                             <span>
                                 <strong>API key mode</strong><br />
-                                Uses `OPENAI_API_KEY` with the configured model `@RuntimeInfo.ActiveModelName`.
+                                Uses `OPENAI_API_KEY` with the configured model `@(RuntimeInfo.IsModelConfigured ? RuntimeInfo.ActiveModelName : "<not configured>")`.
                             </span>
                         </label>
                     </div>
@@ -51,8 +51,8 @@
 
             <div class="settings-actions">
                 <button class="primary-button" type="submit">Save settings</button>
-                <span class="status-pill @(RuntimeInfo.IsApiKeyAvailable ? null : "warning")">
-                    @(RuntimeInfo.IsApiKeyAvailable ? "API key detected" : "OPENAI_API_KEY not available")
+                <span class="status-pill @(RuntimeInfo.IsApiModeAvailable ? null : "warning")">
+                    @(RuntimeInfo.IsApiModeAvailable ? "API mode available" : "API mode unavailable")
                 </span>
             </div>
         </EditForm>
@@ -63,14 +63,21 @@
         <h2>Active runtime summary</h2>
 
         <p><strong>Current mode:</strong> @(RuntimeInfo.IsOffline ? "Offline" : "API key")</p>
-        <p><strong>Configured model:</strong> @RuntimeInfo.ActiveModelName</p>
-        <p><strong>API key available:</strong> @(RuntimeInfo.IsApiKeyAvailable ? "Yes" : "No")</p>
+        <p><strong>API key detected:</strong> @(RuntimeInfo.IsApiKeyAvailable ? "Yes" : "No")</p>
+        <p><strong>Model configured:</strong> @(RuntimeInfo.IsModelConfigured ? "Yes" : "No")</p>
+        <p><strong>Configured model name:</strong> @(RuntimeInfo.IsModelConfigured ? RuntimeInfo.ActiveModelName : "<blank>")</p>
+        <p><strong>API mode available:</strong> @(RuntimeInfo.IsApiModeAvailable ? "Yes" : "No")</p>
+        @if (!RuntimeInfo.IsApiModeAvailable && !string.IsNullOrWhiteSpace(RuntimeInfo.ApiModeUnavailableReason))
+        {
+            <p><strong>Availability note:</strong> @RuntimeInfo.ApiModeUnavailableReason</p>
+        }
 
         <div class="citation-box">
             <h3>Notes</h3>
             <ul>
-                <li>This setting applies to the current Blazor session.</li>
+                <li>This setting applies immediately to the current Blazor session and is persisted in browser localStorage.</li>
                 <li>Offline mode always uses the deterministic fake model.</li>
+                <li>The API key itself is never stored in the browser.</li>
                 <li>API key mode still depends on your OpenAI project having access to the configured model.</li>
             </ul>
         </div>
@@ -87,29 +94,23 @@
         settings.SelectedMode = RuntimeInfo.SelectedMode;
     }
 
-    private Task SaveAsync()
+    private async Task SaveAsync()
     {
         errorMessage = null;
         successMessage = null;
 
-        if (settings.SelectedMode == AgentExecutionMode.Offline)
-        {
-            RuntimeInfo.UseOfflineMode();
-            RuntimeModePreferenceStore.Save(AgentExecutionMode.Offline);
-            successMessage = "Offline mode is now active for this session.";
-            return Task.CompletedTask;
-        }
-
-        if (!RuntimeInfo.TryUseApiKeyMode())
+        if (!RuntimeInfo.TrySetMode(settings.SelectedMode))
         {
             settings.SelectedMode = RuntimeInfo.SelectedMode;
-            errorMessage = "API key mode is unavailable because OPENAI_API_KEY is not set for this app session.";
-            return Task.CompletedTask;
+            errorMessage = RuntimeInfo.ApiModeUnavailableReason ?? "API key mode is unavailable for this session.";
+            return;
         }
 
-        RuntimeModePreferenceStore.Save(AgentExecutionMode.ApiKey);
-        successMessage = $"API key mode is now active for this session using {RuntimeInfo.ActiveModelName}.";
-        return Task.CompletedTask;
+        settings.SelectedMode = RuntimeInfo.SelectedMode;
+        await RuntimeModePreferenceStore.SaveAsync(RuntimeInfo.SelectedMode, CancellationToken.None);
+        successMessage = RuntimeInfo.IsOffline
+            ? "Offline mode is now active for this session and will remain the browser default on this device."
+            : $"API key mode is now active for this session using {RuntimeInfo.ActiveModelName}.";
     }
 
     private sealed class RuntimeSettingsInput

@@ -11,10 +11,18 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
-builder.Services.Configure<OpenAIOptions>(builder.Configuration.GetSection(OpenAIOptions.SectionName));
-builder.Services.Configure<AgentOptions>(builder.Configuration.GetSection(AgentOptions.SectionName));
-builder.Services.Configure<RetrievalOptions>(builder.Configuration.GetSection(RetrievalOptions.SectionName));
-builder.Services.Configure<ApprovalOptions>(builder.Configuration.GetSection(ApprovalOptions.SectionName));
+builder.Services.AddOptions<OpenAIOptions>()
+    .Bind(builder.Configuration.GetSection(OpenAIOptions.SectionName));
+builder.Services.AddOptions<AgentOptions>()
+    .Bind(builder.Configuration.GetSection(AgentOptions.SectionName))
+    .Validate(
+        options => Enum.IsDefined(options.DefaultExecutionMode),
+        "Agent:DefaultExecutionMode must be Offline or ApiKey.")
+    .ValidateOnStart();
+builder.Services.AddOptions<RetrievalOptions>()
+    .Bind(builder.Configuration.GetSection(RetrievalOptions.SectionName));
+builder.Services.AddOptions<ApprovalOptions>()
+    .Bind(builder.Configuration.GetSection(ApprovalOptions.SectionName));
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<DemoIdentityService>();
 builder.Services.AddScoped<AgentLearningLab.Agent.IRuntimeModePreferenceStore, RuntimeModePreferenceStore>();

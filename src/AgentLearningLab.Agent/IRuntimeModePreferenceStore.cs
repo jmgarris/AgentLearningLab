@@ -1,8 +1,10 @@
+using AgentLearningLab.Application.Configuration;
+
 namespace AgentLearningLab.Agent;
 
 public interface IRuntimeModePreferenceStore
 {
-    AgentExecutionMode GetPreferredMode(bool apiKeyAvailable);
+    ValueTask<AgentExecutionMode?> LoadAsync(CancellationToken cancellationToken);
 
-    void Save(AgentExecutionMode mode);
+    ValueTask SaveAsync(AgentExecutionMode mode, CancellationToken cancellationToken);
 }

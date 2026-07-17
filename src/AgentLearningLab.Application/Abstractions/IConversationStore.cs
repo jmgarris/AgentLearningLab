@@ -37,5 +37,8 @@ public interface IConversationStore
         Guid conversationId,
         CancellationToken cancellationToken);
 
-    Task ClearConversationAsync(Guid conversationId, CancellationToken cancellationToken);
+    Task ArchiveConversationAsync(
+        Guid conversationId,
+        AuthenticatedUserContext user,
+        CancellationToken cancellationToken);
 }
