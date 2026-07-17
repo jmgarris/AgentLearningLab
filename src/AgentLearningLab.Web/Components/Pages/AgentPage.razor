@@ -66,7 +66,7 @@ else
                 }
             </div>
 
-            <EditForm Model="this" OnValidSubmit="SendAsync">
+            <EditForm Model="this" FormName="agent-message-form" OnValidSubmit="SendAsync">
                 <div class="composer">
                     <InputTextArea class="composer-input" @bind-Value="messageText" />
                     <button class="primary-button" type="submit" disabled="@busy">Send</button>
