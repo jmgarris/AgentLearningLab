@@ -44,11 +44,14 @@ public sealed class ConversationStore(AgentLearningLabDbContext dbContext) : ICo
         string ownerEmail,
         CancellationToken cancellationToken)
     {
-        return await dbContext.AgentConversations
+        var conversations = await dbContext.AgentConversations
             .Where(x => x.OwnerEmail == ownerEmail)
-            .OrderByDescending(x => x.UpdatedAtUtc)
             .Select(x => new ConversationSummaryViewModel(x.Id, x.Title, x.UpdatedAtUtc))
             .ToListAsync(cancellationToken);
+
+        return conversations
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .ToList();
     }
 
     public async Task<IReadOnlyList<AgentMessage>> GetRecentMessagesAsync(
@@ -105,9 +108,8 @@ public sealed class ConversationStore(AgentLearningLabDbContext dbContext) : ICo
         Guid conversationId,
         CancellationToken cancellationToken)
     {
-        return await dbContext.AgentMessages
+        var transcript = await dbContext.AgentMessages
             .Where(x => x.ConversationId == conversationId)
-            .OrderBy(x => x.CreatedAtUtc)
             .Select(x => new ConversationTranscriptItem(
                 x.Id,
                 x.Kind,
@@ -116,6 +118,10 @@ public sealed class ConversationStore(AgentLearningLabDbContext dbContext) : ICo
                 x.CreatedAtUtc,
                 x.ToolName))
             .ToListAsync(cancellationToken);
+
+        return transcript
+            .OrderBy(x => x.CreatedAtUtc)
+            .ToList();
     }
 
     public async Task ClearConversationAsync(Guid conversationId, CancellationToken cancellationToken)
