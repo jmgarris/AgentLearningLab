@@ -7,25 +7,31 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenAI.Responses;
 using System.ClientModel;
-using System.Text.Json;
+using Microsoft.Extensions.Hosting;
 
 namespace AgentLearningLab.Agent;
 
 public sealed class OpenAIResponsesModelClient : IApiModelClient
 {
     private readonly string _apiKey;
+    private readonly IHostEnvironment? _hostEnvironment;
     private readonly ILogger<OpenAIResponsesModelClient> _logger;
     private readonly OpenAIOptions _options;
+    private readonly IResponseResultMapper _responseResultMapper;
     private readonly ResponsesClient? _responsesClient;
 
-    public OpenAIResponsesModelClient(
+    internal OpenAIResponsesModelClient(
         string apiKey,
         IOptions<OpenAIOptions> options,
-        ILogger<OpenAIResponsesModelClient> logger)
+        IResponseResultMapper responseResultMapper,
+        ILogger<OpenAIResponsesModelClient> logger,
+        IHostEnvironment? hostEnvironment = null)
     {
         _apiKey = apiKey;
         _options = options.Value;
+        _responseResultMapper = responseResultMapper;
         _logger = logger;
+        _hostEnvironment = hostEnvironment;
         _responsesClient = string.IsNullOrWhiteSpace(apiKey)
             ? null
             : new ResponsesClient(new ApiKeyCredential(apiKey));
@@ -54,7 +60,7 @@ public sealed class OpenAIResponsesModelClient : IApiModelClient
                     Model = request.Model,
                     Instructions = request.Instructions,
                     PreviousResponseId = request.PreviousResponseId,
-                    StoredOutputEnabled = false,
+                    StoredOutputEnabled = true,
                     MaxToolCallCount = 8
                 };
 
@@ -68,46 +74,130 @@ public sealed class OpenAIResponsesModelClient : IApiModelClient
                     options.Tools.Add(tool);
                 }
 
-                var response = await _responsesClient!.CreateResponseAsync(options, cancellationToken);
-                return MapResponse(response);
+                ClientResult<ResponseResult> clientResult =
+                    await _responsesClient!.CreateResponseAsync(options, cancellationToken);
+
+                var response = clientResult.Value;
+
+                try
+                {
+                    return _responseResultMapper.Map(response);
+                }
+                catch (OpenAIResponseException ex)
+                {
+                    LogDevelopmentDiagnostics(clientResult, response, ex);
+                    throw;
+                }
             }
-            catch (Exception ex) when (IsModelAccessError(ex, request.Model))
+            catch (OpenAIResponseException)
+            {
+                throw;
+            }
+            catch (ClientResultException ex) when (IsModelAccessError(ex, request.Model))
             {
                 throw new InvalidOperationException(
                     $"The configured OpenAI project does not have access to model '{request.Model}'. Choose a different model or switch to Offline mode.",
                     ex);
             }
-            catch (Exception ex) when (attempt < maxAttempts && IsTransient(ex))
+            catch (ClientResultException ex) when (IsAuthenticationError(ex))
+            {
+                throw new InvalidOperationException(
+                    "The OpenAI request was not authenticated. Verify OPENAI_API_KEY for this PowerShell session or switch back to Offline mode.",
+                    ex);
+            }
+            catch (ClientResultException ex) when (IsQuotaError(ex))
+            {
+                throw new InvalidOperationException(
+                    "The OpenAI project has exhausted quota or credits for this request.",
+                    ex);
+            }
+            catch (ClientResultException ex) when (attempt < maxAttempts && IsTransient(ex))
             {
                 _logger.LogWarning(ex, "Transient OpenAI Responses error on attempt {Attempt}", attempt);
                 await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken);
+            }
+            catch (ClientResultException ex) when (IsRateLimit(ex))
+            {
+                throw new InvalidOperationException(
+                    "The OpenAI request hit a rate limit. Wait briefly and try again.",
+                    ex);
+            }
+            catch (ClientResultException ex) when (IsMalformedRequest(ex))
+            {
+                throw new InvalidOperationException(
+                    "OpenAI rejected the request as malformed. Check the configured model and tool schema.",
+                    ex);
+            }
+            catch (ClientResultException ex)
+            {
+                throw new InvalidOperationException(
+                    "OpenAI Responses failed before a usable result was produced.",
+                    ex);
             }
         }
 
         throw new InvalidOperationException("OpenAI Responses request failed after bounded retries.");
     }
 
-    private static bool IsTransient(Exception exception)
+    private static bool IsTransient(ClientResultException exception)
     {
-        var name = exception.GetType().Name;
         var message = exception.Message;
 
-        return name.Contains("Timeout", StringComparison.OrdinalIgnoreCase)
-            || name.Contains("RateLimit", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("429", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("500", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("502", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("503", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("504", StringComparison.OrdinalIgnoreCase);
+        return exception.Status is 408 or 500 or 502 or 503 or 504
+            || message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("temporarily unavailable", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsModelAccessError(Exception exception, string modelName)
+    private static bool IsModelAccessError(ClientResultException exception, string modelName)
     {
         var message = exception.Message;
-        return message.Contains("model_not_found", StringComparison.OrdinalIgnoreCase)
+        return exception.Status is 403 or 404
+            && (message.Contains("model_not_found", StringComparison.OrdinalIgnoreCase)
             || message.Contains("does not have access to model", StringComparison.OrdinalIgnoreCase)
             || (message.Contains(modelName, StringComparison.OrdinalIgnoreCase)
-                && message.Contains("invalid_request_error", StringComparison.OrdinalIgnoreCase));
+                && message.Contains("invalid_request_error", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static bool IsAuthenticationError(ClientResultException exception)
+    {
+        var message = exception.Message;
+        return exception.Status == 401
+            || message.Contains("invalid_api_key", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("incorrect api key", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsQuotaError(ClientResultException exception)
+    {
+        var message = exception.Message;
+        return exception.Status == 429
+            && (message.Contains("insufficient_quota", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("billing quota", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("run out of credits", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("no balance", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("current quota", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsRateLimit(ClientResultException exception)
+    {
+        var message = exception.Message;
+        return exception.Status == 429
+            && !IsQuotaError(exception)
+            && (message.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("retry", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("too many requests", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("tokens per minute", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("requests per minute", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsMalformedRequest(ClientResultException exception)
+    {
+        var message = exception.Message;
+        return exception.Status == 400
+            || (exception.Status == 403
+                && !IsModelAccessError(exception, string.Empty)
+                && message.Contains("invalid_request_error", StringComparison.OrdinalIgnoreCase))
+            || message.Contains("tool schema", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("json schema", StringComparison.OrdinalIgnoreCase);
     }
 
     private static ResponseItem MapInputItem(ModelConversationItem item)
@@ -132,52 +222,37 @@ public sealed class OpenAIResponsesModelClient : IApiModelClient
             strictModeEnabled: true,
             functionDescription: tool.Description);
 
-    private static ModelTurnResult MapResponse(object response)
+    private void LogDevelopmentDiagnostics(
+        ClientResult<ResponseResult> clientResult,
+        ResponseResult response,
+        OpenAIResponseException exception)
     {
-        var toolCalls = new List<ModelToolCall>();
-        string? finalText = null;
+        _logger.LogWarning(
+            exception,
+            "OpenAI response mapping failed with {ErrorCode} for response {ResponseId} status {Status}",
+            exception.ErrorCode,
+            response.Id,
+            response.Status?.ToString() ?? "Unknown");
 
-        var responseType = response.GetType();
-        var outputItems = responseType.GetProperty("OutputItems")?.GetValue(response) as System.Collections.IEnumerable;
-
-        if (outputItems is not null)
+        if (!_options.EnableDevelopmentResponseDiagnostics || !string.Equals(_hostEnvironment?.EnvironmentName, Environments.Development, StringComparison.Ordinal))
         {
-            foreach (var item in outputItems)
-            {
-                if (item is null)
-                {
-                    continue;
-                }
-
-                var itemType = item.GetType();
-                if (string.Equals(itemType.Name, "FunctionCallResponseItem", StringComparison.Ordinal))
-                {
-                    toolCalls.Add(new ModelToolCall(
-                        itemType.GetProperty("CallId")?.GetValue(item)?.ToString() ?? string.Empty,
-                        itemType.GetProperty("FunctionName")?.GetValue(item)?.ToString() ?? string.Empty,
-                        itemType.GetProperty("FunctionArguments")?.GetValue(item)?.ToString() ?? "{}"));
-                }
-                else if (string.Equals(itemType.Name, "MessageResponseItem", StringComparison.Ordinal))
-                {
-                    var role = itemType.GetProperty("Role")?.GetValue(item)?.ToString();
-                    if (string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase))
-                    {
-                        finalText ??= itemType.GetProperty("ContentText")?.GetValue(item)?.ToString();
-                    }
-                }
-            }
+            return;
         }
 
-        var usageObject = responseType.GetProperty("Usage")?.GetValue(response);
-        var usage = usageObject is null
-            ? null
-            : new AgentUsage(
-                usageObject.GetType().GetProperty("InputTokenCount")?.GetValue(usageObject) as int?,
-                usageObject.GetType().GetProperty("OutputTokenCount")?.GetValue(usageObject) as int?,
-                usageObject.GetType().GetProperty("TotalTokenCount")?.GetValue(usageObject) as int?,
-                TimeSpan.Zero);
+        var rawResponse = clientResult.GetRawResponse().ToString();
+        if (string.IsNullOrWhiteSpace(rawResponse))
+        {
+            return;
+        }
 
-        var responseId = responseType.GetProperty("Id")?.GetValue(response)?.ToString();
-        return new ModelTurnResult(responseId, finalText, toolCalls, usage);
+        const int maxLength = 4000;
+        var truncated = rawResponse.Length <= maxLength
+            ? rawResponse
+            : $"{rawResponse[..maxLength]}...[truncated]";
+
+        _logger.LogDebug(
+            "Development-only OpenAI raw response snapshot for {ResponseId}: {RawResponse}",
+            response.Id,
+            truncated);
     }
 }

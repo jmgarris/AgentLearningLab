@@ -116,6 +116,8 @@ dotnet run --project .\src\AgentLearningLab.Web
 
 Open `/settings` and select API Key mode. The setting takes effect immediately for subsequent turns in the current Blazor session, and the selected mode is persisted in browser `localStorage`. The API key itself is never stored in the browser.
 
+For live Responses API continuation, the sample now relies on stored response state so tool-call follow-up turns can use `previous_response_id` correctly. If you need temporary mapper diagnostics during local development, set `OpenAI:EnableDevelopmentResponseDiagnostics` to `true` only in the Development environment.
+
 ## Health check
 
 The web app exposes:
@@ -215,6 +217,7 @@ Those migration commands are included as guidance only and were not part of the 
 ## Troubleshooting
 
 - If API Key mode is unavailable, check both `OPENAI_API_KEY` and `OpenAI__Model`.
+- If a live tool call reaches OpenAI but does not continue correctly, confirm your organization allows stored Responses state. The sample now uses `previous_response_id` plus stored response state for live tool continuation.
 - If you ran an older version of the sample before these schema updates, the startup initializer may recreate the local SQLite database so the app can add the new conversation columns safely.
 - If the app stays in offline mode, confirm `OPENAI_API_KEY` is set in the same PowerShell session where you start the app.
 - If SQLite file locking appears after abrupt test interruption, delete `src/AgentLearningLab.Web/App_Data/agent-learning-lab.db` and rerun the app.

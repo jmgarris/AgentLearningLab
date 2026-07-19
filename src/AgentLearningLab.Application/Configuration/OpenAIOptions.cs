@@ -7,4 +7,6 @@ public sealed class OpenAIOptions
     public string Model { get; set; } = string.Empty;
 
     public int TimeoutSeconds { get; set; } = 60;
+
+    public bool EnableDevelopmentResponseDiagnostics { get; set; }
 }

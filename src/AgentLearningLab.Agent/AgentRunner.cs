@@ -77,7 +77,7 @@ public sealed class AgentRunner
             cancellationToken);
 
         var context = new AgentContext(conversation.Id, run.Id, correlationId, user);
-        return await ContinueLoopAsync(context, 0, cancellationToken);
+        return await ContinueLoopAsync(context, 0, null, null, cancellationToken);
     }
 
     public async Task<AgentRunResult> ApproveAsync(
@@ -177,7 +177,12 @@ public sealed class AgentRunner
                     cancellationToken);
             }
 
-            return await ContinueLoopAsync(context, existingStepCount + 1, cancellationToken);
+            return await ContinueLoopAsync(
+                context,
+                existingStepCount + 1,
+                claim.ApprovalRequest.ModelResponseId,
+                [new ModelToolResultItem(claim.ApprovalRequest.ToolCallId, tool.Definition.Name, execution.OutputJson)],
+                cancellationToken);
         }
         catch
         {
@@ -237,6 +242,8 @@ public sealed class AgentRunner
     private async Task<AgentRunResult> ContinueLoopAsync(
         AgentContext context,
         int existingStepCount,
+        string? previousResponseId,
+        IReadOnlyList<ModelConversationItem>? continuationItems,
         CancellationToken cancellationToken)
     {
         using var scope = _logger.BeginScope(new Dictionary<string, object>
@@ -261,22 +268,34 @@ public sealed class AgentRunner
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var recentMessages = await _conversationStore.GetRecentMessagesAsync(
-                context.ConversationId,
-                _agentOptions.MaximumRecentMessages,
-                cancellationToken);
+            IReadOnlyList<ModelConversationItem> inputItems;
+            if (previousResponseId is not null && continuationItems is not null)
+            {
+                inputItems = continuationItems;
+            }
+            else
+            {
+                var recentMessages = await _conversationStore.GetRecentMessagesAsync(
+                    context.ConversationId,
+                    _agentOptions.MaximumRecentMessages,
+                    cancellationToken);
+                inputItems = BuildInputItems(recentMessages);
+            }
 
             var request = new ModelTurnRequest(
                 _runtimeInfo.CurrentModelLabel,
                 _agent.Definition.Instructions,
-                BuildInputItems(recentMessages),
-                _toolRegistry.GetModelToolDefinitions());
+                inputItems,
+                _toolRegistry.GetModelToolDefinitions(),
+                previousResponseId);
 
             _logger.LogInformation("Starting agent step {StepNumber}", stepNumber);
 
             var startedAtUtc = DateTimeOffset.UtcNow;
             var modelClient = _modelClientSelector.GetCurrentClient();
             var modelResult = await modelClient.CreateTurnAsync(request, cancellationToken);
+            previousResponseId = modelResult.ResponseId;
+            continuationItems = null;
 
             if (modelResult.ToolCalls.Count == 0)
             {
@@ -331,6 +350,8 @@ public sealed class AgentRunner
                     usage,
                     null);
             }
+
+            var nextContinuationItems = new List<ModelConversationItem>();
 
             foreach (var toolCall in modelResult.ToolCalls)
             {
@@ -463,7 +484,11 @@ public sealed class AgentRunner
                     tool.Definition.Name,
                     execution.StructuredDataJson,
                     cancellationToken);
+
+                nextContinuationItems.Add(new ModelToolResultItem(toolCall.CallId, tool.Definition.Name, execution.OutputJson));
             }
+
+            continuationItems = nextContinuationItems;
         }
 
         await _runStore.CompleteRunAsync(
@@ -578,6 +603,7 @@ public sealed class AgentRunner
                 result.Summary,
                 result.Citations,
                 structuredDataJson,
+                result.ResultJson,
                 result.ErrorCode);
         }
         catch (Exception ex)
@@ -654,5 +680,6 @@ public sealed class AgentRunner
         string Summary,
         IReadOnlyList<AgentCitation> Citations,
         string StructuredDataJson,
+        string OutputJson,
         string? ErrorCode);
 }

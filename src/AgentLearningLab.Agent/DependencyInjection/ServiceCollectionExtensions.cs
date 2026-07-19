@@ -1,6 +1,7 @@
 using AgentLearningLab.Application.AI;
 using AgentLearningLab.Application.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace AgentLearningLab.Agent.DependencyInjection;
@@ -15,14 +16,19 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IRuntimeModePreferenceStore, NoOpRuntimeModePreferenceStore>();
         services.AddScoped<FakeModelClient>();
         services.AddScoped<IOfflineModelClient>(serviceProvider => serviceProvider.GetRequiredService<FakeModelClient>());
+        services.AddScoped<IResponseResultMapper, ResponseResultMapper>();
         services.AddScoped<OpenAIResponsesModelClient>(serviceProvider =>
         {
             var options = serviceProvider.GetRequiredService<IOptions<OpenAIOptions>>();
+            var responseResultMapper = serviceProvider.GetRequiredService<IResponseResultMapper>();
             var logger = serviceProvider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<OpenAIResponsesModelClient>>();
+            var hostEnvironment = serviceProvider.GetService<IHostEnvironment>();
             return new OpenAIResponsesModelClient(
                 Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty,
                 options,
-                logger);
+                responseResultMapper,
+                logger,
+                hostEnvironment);
         });
         services.AddScoped<IApiModelClient>(serviceProvider => serviceProvider.GetRequiredService<OpenAIResponsesModelClient>());
         services.AddScoped<IModelClientSelector, ModelClientSelector>();
