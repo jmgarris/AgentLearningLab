@@ -56,16 +56,41 @@ public sealed class AgentRunner
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
+        var normalizedUserMessage = userMessage.Trim();
 
         var conversation = await _conversationStore.GetOrCreateConversationAsync(conversationId, user, cancellationToken);
+        if (!_runtimeInfo.IsUsingApiKey)
+        {
+            await _conversationStore.ResetLiveConversationStateAsync(conversation.Id, user, cancellationToken);
+        }
+
         await _conversationStore.AddMessageAsync(
             conversation.Id,
             AgentMessageKind.User,
             user.Email,
-            userMessage.Trim(),
+            normalizedUserMessage,
             null,
             null,
             cancellationToken);
+
+        string? previousResponseId = null;
+        IReadOnlyList<ModelConversationItem>? initialInputItems = null;
+        if (_runtimeInfo.IsUsingApiKey)
+        {
+            var liveState = await _conversationStore.GetLiveConversationStateAsync(conversation.Id, user, cancellationToken);
+            if (liveState is not null)
+            {
+                if (string.Equals(liveState.Model, _runtimeInfo.CurrentModelLabel, StringComparison.Ordinal))
+                {
+                    previousResponseId = liveState.ResponseId;
+                    initialInputItems = [new ModelMessageItem("user", normalizedUserMessage)];
+                }
+                else
+                {
+                    await _conversationStore.ResetLiveConversationStateAsync(conversation.Id, user, cancellationToken);
+                }
+            }
+        }
 
         var correlationId = Guid.NewGuid().ToString("N");
         var run = await _runStore.StartRunAsync(
@@ -77,7 +102,13 @@ public sealed class AgentRunner
             cancellationToken);
 
         var context = new AgentContext(conversation.Id, run.Id, correlationId, user);
-        return await ContinueLoopAsync(context, 0, null, null, cancellationToken);
+        return await ContinueLoopAsync(
+            context,
+            user,
+            0,
+            previousResponseId,
+            initialInputItems,
+            cancellationToken);
     }
 
     public async Task<AgentRunResult> ApproveAsync(
@@ -146,6 +177,9 @@ public sealed class AgentRunner
         using var arguments = JsonDocument.Parse(validation.NormalizedArgumentsJson);
         var existingTrace = await _runStore.GetRunTraceAsync(claim.ApprovalRequest.AgentRunId, cancellationToken);
         var existingStepCount = existingTrace?.Steps.Count ?? 0;
+        var conversationOwner = CreateConversationOwnerContext(
+            claim.ApprovalRequest.RequestingUserEmail,
+            claim.ApprovalRequest.RequiredRole);
         var context = new AgentContext(
             claim.ApprovalRequest.ConversationId,
             claim.ApprovalRequest.AgentRunId,
@@ -179,6 +213,7 @@ public sealed class AgentRunner
 
             return await ContinueLoopAsync(
                 context,
+                conversationOwner,
                 existingStepCount + 1,
                 claim.ApprovalRequest.ModelResponseId,
                 [new ModelToolResultItem(claim.ApprovalRequest.ToolCallId, tool.Definition.Name, execution.OutputJson)],
@@ -216,6 +251,10 @@ public sealed class AgentRunner
             null,
             null,
             cancellationToken);
+        await _conversationStore.ResetLiveConversationStateAsync(
+            approval.ConversationId,
+            CreateConversationOwnerContext(approval.RequestingUserEmail, approval.RequiredRole),
+            cancellationToken);
 
         await _runStore.CompleteRunAsync(
             approval.AgentRunId,
@@ -241,6 +280,7 @@ public sealed class AgentRunner
 
     private async Task<AgentRunResult> ContinueLoopAsync(
         AgentContext context,
+        AuthenticatedUserContext conversationOwner,
         int existingStepCount,
         string? previousResponseId,
         IReadOnlyList<ModelConversationItem>? continuationItems,
@@ -257,6 +297,7 @@ public sealed class AgentRunner
         var seenToolCalls = new HashSet<string>(StringComparer.Ordinal);
         var citations = new Dictionary<string, AgentCitation>(StringComparer.Ordinal);
         var stepSummaries = new List<AgentStepSummary>();
+        var recoveredInvalidPreviousResponse = false;
 
         var existingTrace = await _runStore.GetRunTraceAsync(context.RunId, cancellationToken);
         if (existingTrace is not null)
@@ -267,35 +308,75 @@ public sealed class AgentRunner
         for (var stepNumber = existingStepCount + 1; stepNumber <= _agentOptions.MaximumSteps; stepNumber++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            IReadOnlyList<ModelConversationItem> inputItems;
-            if (previousResponseId is not null && continuationItems is not null)
-            {
-                inputItems = continuationItems;
-            }
-            else
-            {
-                var recentMessages = await _conversationStore.GetRecentMessagesAsync(
-                    context.ConversationId,
-                    _agentOptions.MaximumRecentMessages,
-                    cancellationToken);
-                inputItems = BuildInputItems(recentMessages);
-            }
-
-            var request = new ModelTurnRequest(
-                _runtimeInfo.CurrentModelLabel,
-                _agent.Definition.Instructions,
-                inputItems,
-                _toolRegistry.GetModelToolDefinitions(),
-                previousResponseId);
-
-            _logger.LogInformation("Starting agent step {StepNumber}", stepNumber);
-
             var startedAtUtc = DateTimeOffset.UtcNow;
             var modelClient = _modelClientSelector.GetCurrentClient();
-            var modelResult = await modelClient.CreateTurnAsync(request, cancellationToken);
+            ModelTurnResult modelResult;
+
+            while (true)
+            {
+                IReadOnlyList<ModelConversationItem> inputItems;
+                if (previousResponseId is not null && continuationItems is not null)
+                {
+                    inputItems = continuationItems;
+                }
+                else
+                {
+                    var recentMessages = await _conversationStore.GetRecentMessagesAsync(
+                        context.ConversationId,
+                        _agentOptions.MaximumRecentMessages,
+                        cancellationToken);
+                    inputItems = BuildSafeTranscriptInputItems(recentMessages);
+                }
+
+                var request = new ModelTurnRequest(
+                    _runtimeInfo.CurrentModelLabel,
+                    _agent.Definition.Instructions,
+                    inputItems,
+                    _toolRegistry.GetModelToolDefinitions(),
+                    previousResponseId);
+
+                _logger.LogInformation("Starting agent step {StepNumber}", stepNumber);
+
+                try
+                {
+                    modelResult = await modelClient.CreateTurnAsync(request, cancellationToken);
+                    break;
+                }
+                catch (OpenAIRequestException ex) when (
+                    _runtimeInfo.IsUsingApiKey &&
+                    !recoveredInvalidPreviousResponse &&
+                    ex.ErrorCode == "openai_previous_response_invalid" &&
+                    !string.IsNullOrWhiteSpace(previousResponseId))
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Stored previous_response_id {PreviousResponseId} is no longer valid for conversation {ConversationId}. Retrying with rebuilt transcript.",
+                        previousResponseId,
+                        context.ConversationId);
+
+                    await _conversationStore.ResetLiveConversationStateAsync(
+                        context.ConversationId,
+                        conversationOwner,
+                        cancellationToken);
+
+                    previousResponseId = null;
+                    continuationItems = null;
+                    recoveredInvalidPreviousResponse = true;
+                }
+            }
+
             previousResponseId = modelResult.ResponseId;
             continuationItems = null;
+            if (_runtimeInfo.IsUsingApiKey && !string.IsNullOrWhiteSpace(modelResult.ResponseId))
+            {
+                await _conversationStore.SaveLiveConversationStateAsync(
+                    context.ConversationId,
+                    conversationOwner,
+                    modelResult.ResponseId,
+                    _runtimeInfo.CurrentModelLabel,
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
+            }
 
             if (modelResult.ToolCalls.Count == 0)
             {
@@ -513,12 +594,22 @@ public sealed class AgentRunner
             "maximum_steps_exceeded");
     }
 
-    private static IReadOnlyList<ModelConversationItem> BuildInputItems(IReadOnlyList<AgentMessage> messages)
+    internal static IReadOnlyList<ModelConversationItem> BuildSafeTranscriptInputItems(IReadOnlyList<AgentMessage> messages)
     {
         var items = new List<ModelConversationItem>();
+        var latestUserIndex = -1;
 
-        foreach (var message in messages)
+        for (var index = 0; index < messages.Count; index++)
         {
+            if (messages[index].Kind == AgentMessageKind.User)
+            {
+                latestUserIndex = index;
+            }
+        }
+
+        for (var index = 0; index < messages.Count; index++)
+        {
+            var message = messages[index];
             switch (message.Kind)
             {
                 case AgentMessageKind.User:
@@ -528,10 +619,9 @@ public sealed class AgentRunner
                     items.Add(new ModelMessageItem("assistant", message.Content));
                     break;
                 case AgentMessageKind.System:
-                    items.Add(new ModelMessageItem("system", message.Content));
                     break;
                 case AgentMessageKind.Tool:
-                    if (message.StructuredDataJson is not null)
+                    if (index > latestUserIndex && message.StructuredDataJson is not null)
                     {
                         using var document = JsonDocument.Parse(message.StructuredDataJson);
                         var root = document.RootElement;
@@ -540,6 +630,7 @@ public sealed class AgentRunner
                         var outputJson = root.GetProperty("outputJson").GetString() ?? "{}";
                         items.Add(new ModelToolResultItem(callId, toolName, outputJson));
                     }
+
                     break;
             }
         }
@@ -673,6 +764,11 @@ public sealed class AgentRunner
             toolName,
             outputJson
         });
+    }
+
+    private static AuthenticatedUserContext CreateConversationOwnerContext(string ownerEmail, ClubRole role)
+    {
+        return new AuthenticatedUserContext(Guid.Empty, ownerEmail, ownerEmail, role);
     }
 
     private sealed record ToolExecutionOutcome(

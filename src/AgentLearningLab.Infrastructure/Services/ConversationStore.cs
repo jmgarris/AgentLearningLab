@@ -72,6 +72,56 @@ public sealed class ConversationStore(AgentLearningLabDbContext dbContext) : ICo
         return newestFirst;
     }
 
+    public async Task<LiveConversationState?> GetLiveConversationStateAsync(
+        Guid conversationId,
+        AuthenticatedUserContext user,
+        CancellationToken cancellationToken)
+    {
+        return await dbContext.AgentConversations
+            .Where(x => x.Id == conversationId && x.OwnerEmail == user.Email && !x.IsArchived)
+            .Select(x => x.LastOpenAIResponseId != null
+                && x.LastOpenAIModel != null
+                && x.LastOpenAIResponseAtUtc != null
+                    ? new LiveConversationState(
+                        x.LastOpenAIResponseId,
+                        x.LastOpenAIModel,
+                        x.LastOpenAIResponseAtUtc.Value)
+                    : null)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    public async Task SaveLiveConversationStateAsync(
+        Guid conversationId,
+        AuthenticatedUserContext user,
+        string responseId,
+        string model,
+        DateTimeOffset updatedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(responseId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(model);
+
+        var conversation = await GetOwnedConversationAsync(conversationId, user, cancellationToken);
+        conversation.LastOpenAIResponseId = responseId.Trim();
+        conversation.LastOpenAIModel = model.Trim();
+        conversation.LastOpenAIResponseAtUtc = updatedAtUtc;
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task ResetLiveConversationStateAsync(
+        Guid conversationId,
+        AuthenticatedUserContext user,
+        CancellationToken cancellationToken)
+    {
+        var conversation = await GetOwnedConversationAsync(conversationId, user, cancellationToken);
+        conversation.LastOpenAIResponseId = null;
+        conversation.LastOpenAIModel = null;
+        conversation.LastOpenAIResponseAtUtc = null;
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
     public async Task AddMessageAsync(
         Guid conversationId,
         AgentMessageKind kind,
@@ -143,6 +193,29 @@ public sealed class ConversationStore(AgentLearningLabDbContext dbContext) : ICo
         }
 
         conversation.IsArchived = true;
+        conversation.LastOpenAIResponseId = null;
+        conversation.LastOpenAIModel = null;
+        conversation.LastOpenAIResponseAtUtc = null;
         await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<AgentConversation> GetOwnedConversationAsync(
+        Guid conversationId,
+        AuthenticatedUserContext user,
+        CancellationToken cancellationToken)
+    {
+        var conversation = await dbContext.AgentConversations
+            .FirstOrDefaultAsync(
+                x => x.Id == conversationId
+                    && x.OwnerEmail == user.Email
+                    && !x.IsArchived,
+                cancellationToken);
+
+        if (conversation is null)
+        {
+            throw new InvalidOperationException("Conversation not found for the current user.");
+        }
+
+        return conversation;
     }
 }

@@ -3,6 +3,8 @@ using AgentLearningLab.Application.AI;
 using AgentLearningLab.Application.Abstractions;
 using AgentLearningLab.Application.Configuration;
 using AgentLearningLab.Application.Identity;
+using AgentLearningLab.Domain.Entities;
+using AgentLearningLab.Domain.Enums;
 using AgentLearningLab.Infrastructure.DependencyInjection;
 using AgentLearningLab.Infrastructure.Persistence;
 using AgentLearningLab.Tools.DependencyInjection;
@@ -57,6 +59,116 @@ public sealed class ResponsesApiContinuationTests
     }
 
     [Test]
+    public async Task SubsequentUserTurn_ShouldUseSavedPreviousResponseIdAndLatestUserMessageOnly()
+    {
+        await using var host = await ResponsesApiTestHost.CreateAsync(
+            (request, _) =>
+            {
+                request.PreviousResponseId.Should().BeNull();
+                request.InputItems.Should().ContainSingle();
+                request.InputItems[0].Should().BeEquivalentTo(new ModelMessageItem("user", "What is the current status of N123AB?"));
+
+                return Task.FromResult(new ModelTurnResult(
+                    "resp_turn_1",
+                    "N123AB is currently Available at tach 2450.3.",
+                    [],
+                    null));
+            },
+            (request, _) =>
+            {
+                request.PreviousResponseId.Should().Be("resp_turn_1");
+                request.InputItems.Should().ContainSingle();
+                request.InputItems[0].Should().BeEquivalentTo(new ModelMessageItem("user", "What is the current status of N456CD?"));
+
+                return Task.FromResult(new ModelTurnResult(
+                    "resp_turn_2",
+                    "N456CD is currently Down for maintenance.",
+                    [],
+                    null));
+            });
+
+        using var scope = host.Services.CreateScope();
+        var runner = scope.ServiceProvider.GetRequiredService<AgentRunner>();
+        var conversations = scope.ServiceProvider.GetRequiredService<IConversationStore>();
+        var user = await host.GetUserAsync("member@example.test");
+
+        var first = await runner.RunAsync(null, "What is the current status of N123AB?", user, CancellationToken.None);
+        var second = await runner.RunAsync(first.ConversationId, "What is the current status of N456CD?", user, CancellationToken.None);
+        var liveState = await conversations.GetLiveConversationStateAsync(first.ConversationId, user, CancellationToken.None);
+
+        second.Status.Should().Be(AgentRunStatus.Completed);
+        second.FinalText.Should().Contain("N456CD is currently Down for maintenance.");
+        liveState.Should().NotBeNull();
+        liveState!.ResponseId.Should().Be("resp_turn_2");
+        liveState.Model.Should().Be("gpt-test");
+    }
+
+    [Test]
+    public async Task StalePreviousResponseId_ShouldRetryWithSafeTranscriptAndClearToolReplay()
+    {
+        await using var host = await ResponsesApiTestHost.CreateAsync(
+            (request, _) =>
+            {
+                request.PreviousResponseId.Should().BeNull();
+                request.InputItems.Should().ContainSingle();
+                request.InputItems[0].Should().BeEquivalentTo(new ModelMessageItem("user", "What is the current status of N123AB?"));
+
+                return Task.FromResult(new ModelTurnResult(
+                    "resp_turn_1",
+                    "N123AB is currently Available at tach 2450.3.",
+                    [],
+                    null));
+            },
+            (request, _) =>
+            {
+                request.PreviousResponseId.Should().Be("resp_turn_1");
+                request.InputItems.Should().ContainSingle();
+                request.InputItems[0].Should().BeEquivalentTo(new ModelMessageItem("user", "What is the current status of N456CD?"));
+
+                throw new OpenAIRequestException(
+                    "openai_previous_response_invalid",
+                    "Stored response could not be found.",
+                    400,
+                    "previous_response_not_found",
+                    "previous_response_id",
+                    previousResponseIdSupplied: true);
+            },
+            (request, _) =>
+            {
+                request.PreviousResponseId.Should().BeNull();
+                request.InputItems.Should().HaveCount(3);
+                request.InputItems.Should().AllBeOfType<ModelMessageItem>();
+
+                var messages = request.InputItems.Cast<ModelMessageItem>().ToArray();
+                messages.Select(message => message.Role).Should().ContainInOrder("user", "assistant", "user");
+                messages.Select(message => message.Content).Should().ContainInOrder(
+                    "What is the current status of N123AB?",
+                    "N123AB is currently Available at tach 2450.3.",
+                    "What is the current status of N456CD?");
+
+                return Task.FromResult(new ModelTurnResult(
+                    "resp_turn_2_rebuilt",
+                    "N456CD is currently Available at tach 1988.6.",
+                    [],
+                    null));
+            });
+
+        using var scope = host.Services.CreateScope();
+        var runner = scope.ServiceProvider.GetRequiredService<AgentRunner>();
+        var conversations = scope.ServiceProvider.GetRequiredService<IConversationStore>();
+        var user = await host.GetUserAsync("member@example.test");
+
+        var first = await runner.RunAsync(null, "What is the current status of N123AB?", user, CancellationToken.None);
+        var second = await runner.RunAsync(first.ConversationId, "What is the current status of N456CD?", user, CancellationToken.None);
+        var liveState = await conversations.GetLiveConversationStateAsync(first.ConversationId, user, CancellationToken.None);
+
+        second.Status.Should().Be(AgentRunStatus.Completed);
+        second.FinalText.Should().Contain("N456CD is currently Available");
+        liveState.Should().NotBeNull();
+        liveState!.ResponseId.Should().Be("resp_turn_2_rebuilt");
+    }
+
+    [Test]
     public async Task ApprovalContinuation_ShouldReuseStoredResponseId()
     {
         await using var host = await ResponsesApiTestHost.CreateAsync(
@@ -103,6 +215,26 @@ public sealed class ResponsesApiContinuationTests
         (await outbox.ListMessagesAsync(CancellationToken.None)).Should().ContainSingle();
     }
 
+    [Test]
+    public void BuildSafeTranscriptInputItems_ShouldIgnoreSystemAndToolMessages()
+    {
+        var items = AgentRunner.BuildSafeTranscriptInputItems(
+            [
+                new AgentMessage { Kind = AgentMessageKind.System, Content = "Hidden system prompt." },
+                new AgentMessage { Kind = AgentMessageKind.User, Content = "First question." },
+                new AgentMessage { Kind = AgentMessageKind.Tool, Content = "Tool summary.", StructuredDataJson = """{"callId":"call-1","toolName":"get_aircraft_status","outputJson":"{}"}""" },
+                new AgentMessage { Kind = AgentMessageKind.Assistant, Content = "First answer." },
+                new AgentMessage { Kind = AgentMessageKind.User, Content = "Second question." }
+            ]);
+
+        items.Should().HaveCount(3);
+        items.Should().AllBeOfType<ModelMessageItem>();
+
+        var messages = items.Cast<ModelMessageItem>().ToArray();
+        messages.Select(message => message.Role).Should().ContainInOrder("user", "assistant", "user");
+        messages.Select(message => message.Content).Should().ContainInOrder("First question.", "First answer.", "Second question.");
+    }
+
     private sealed class ScriptedApiModelClient : IApiModelClient
     {
         private readonly Queue<Func<ModelTurnRequest, Guid, Task<ModelTurnResult>>> handlers;
@@ -142,9 +274,7 @@ public sealed class ResponsesApiContinuationTests
 
         public string DatabasePath { get; }
 
-        public static async Task<ResponsesApiTestHost> CreateAsync(
-            Func<ModelTurnRequest, Guid, Task<ModelTurnResult>> firstHandler,
-            Func<ModelTurnRequest, Guid, Task<ModelTurnResult>> secondHandler)
+        public static async Task<ResponsesApiTestHost> CreateAsync(params Func<ModelTurnRequest, Guid, Task<ModelTurnResult>>[] handlers)
         {
             var databasePath = Path.Combine(Path.GetTempPath(), $"agent-learning-lab-responses-api-tests-{Guid.NewGuid():N}.db");
             var configuration = new ConfigurationBuilder()
@@ -182,7 +312,7 @@ public sealed class ResponsesApiContinuationTests
                 maintenanceOfficerId = (await clubData.GetMemberByEmailAsync("maintenance.officer@example.test", CancellationToken.None))!.Id;
             }
 
-            services.AddScoped<ScriptedApiModelClient>(_ => new ScriptedApiModelClient(maintenanceOfficerId, [firstHandler, secondHandler]));
+            services.AddScoped<ScriptedApiModelClient>(_ => new ScriptedApiModelClient(maintenanceOfficerId, handlers));
             services.AddScoped<IApiModelClient>(serviceProvider => serviceProvider.GetRequiredService<ScriptedApiModelClient>());
             services.AddScoped<IModelClientSelector, ModelClientSelector>();
             services.AddScoped<ToolRegistry>();

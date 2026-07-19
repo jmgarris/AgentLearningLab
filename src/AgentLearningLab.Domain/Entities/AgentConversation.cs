@@ -10,6 +10,12 @@ public sealed class AgentConversation : AuditableEntity
 
     public bool IsArchived { get; set; }
 
+    public string? LastOpenAIResponseId { get; set; }
+
+    public string? LastOpenAIModel { get; set; }
+
+    public DateTimeOffset? LastOpenAIResponseAtUtc { get; set; }
+
     public ICollection<AgentMessage> Messages { get; set; } = [];
 
     public ICollection<AgentRun> Runs { get; set; } = [];

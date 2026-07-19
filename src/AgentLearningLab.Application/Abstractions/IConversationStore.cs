@@ -24,6 +24,24 @@ public interface IConversationStore
         int maximumMessages,
         CancellationToken cancellationToken);
 
+    Task<LiveConversationState?> GetLiveConversationStateAsync(
+        Guid conversationId,
+        AuthenticatedUserContext user,
+        CancellationToken cancellationToken);
+
+    Task SaveLiveConversationStateAsync(
+        Guid conversationId,
+        AuthenticatedUserContext user,
+        string responseId,
+        string model,
+        DateTimeOffset updatedAtUtc,
+        CancellationToken cancellationToken);
+
+    Task ResetLiveConversationStateAsync(
+        Guid conversationId,
+        AuthenticatedUserContext user,
+        CancellationToken cancellationToken);
+
     Task AddMessageAsync(
         Guid conversationId,
         AgentMessageKind kind,

@@ -43,3 +43,33 @@ public sealed class OpenAIResponseMappingException(
     string? responseId,
     string? responseStatus)
     : OpenAIResponseException(errorCode, message, responseId, responseStatus);
+
+public sealed class OpenAIRequestException : InvalidOperationException
+{
+    public OpenAIRequestException(
+        string errorCode,
+        string message,
+        int? httpStatus,
+        string? openAiErrorCode,
+        string? parameterName,
+        bool previousResponseIdSupplied,
+        Exception? innerException = null)
+        : base(message, innerException)
+    {
+        ErrorCode = errorCode;
+        HttpStatus = httpStatus;
+        OpenAiErrorCode = openAiErrorCode;
+        ParameterName = parameterName;
+        PreviousResponseIdSupplied = previousResponseIdSupplied;
+    }
+
+    public string ErrorCode { get; }
+
+    public int? HttpStatus { get; }
+
+    public string? OpenAiErrorCode { get; }
+
+    public string? ParameterName { get; }
+
+    public bool PreviousResponseIdSupplied { get; }
+}

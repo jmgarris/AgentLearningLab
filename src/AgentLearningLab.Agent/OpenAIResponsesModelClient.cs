@@ -122,10 +122,52 @@ public sealed class OpenAIResponsesModelClient : IApiModelClient
                     "The OpenAI request hit a rate limit. Wait briefly and try again.",
                     ex);
             }
+            catch (ClientResultException ex) when (IsPreviousResponseInvalid(ex, request))
+            {
+                LogRequestFailure(ex, request, "openai_previous_response_invalid");
+                throw new OpenAIRequestException(
+                    "openai_previous_response_invalid",
+                    "The saved OpenAI conversation state could not be continued. The application reset the live state; try the message again.",
+                    ex.Status,
+                    TryGetOpenAiErrorCode(ex),
+                    TryGetParameterName(ex),
+                    previousResponseIdSupplied: !string.IsNullOrWhiteSpace(request.PreviousResponseId),
+                    ex);
+            }
+            catch (ClientResultException ex) when (IsOrphanedToolOutput(ex, request))
+            {
+                LogRequestFailure(ex, request, "openai_orphaned_tool_output");
+                throw new OpenAIRequestException(
+                    "openai_orphaned_tool_output",
+                    "The conversation contained a tool output without its matching function call. Start a new conversation or reset its live API state.",
+                    ex.Status,
+                    TryGetOpenAiErrorCode(ex),
+                    TryGetParameterName(ex),
+                    previousResponseIdSupplied: !string.IsNullOrWhiteSpace(request.PreviousResponseId),
+                    ex);
+            }
+            catch (ClientResultException ex) when (IsToolSchemaInvalid(ex))
+            {
+                LogRequestFailure(ex, request, "openai_tool_schema_invalid");
+                throw new OpenAIRequestException(
+                    "openai_tool_schema_invalid",
+                    "OpenAI rejected the tool schema for this request.",
+                    ex.Status,
+                    TryGetOpenAiErrorCode(ex),
+                    TryGetParameterName(ex),
+                    previousResponseIdSupplied: !string.IsNullOrWhiteSpace(request.PreviousResponseId),
+                    ex);
+            }
             catch (ClientResultException ex) when (IsMalformedRequest(ex))
             {
-                throw new InvalidOperationException(
+                LogRequestFailure(ex, request, "openai_request_malformed");
+                throw new OpenAIRequestException(
+                    "openai_request_malformed",
                     "OpenAI rejected the request as malformed. Check the configured model and tool schema.",
+                    ex.Status,
+                    TryGetOpenAiErrorCode(ex),
+                    TryGetParameterName(ex),
+                    previousResponseIdSupplied: !string.IsNullOrWhiteSpace(request.PreviousResponseId),
                     ex);
             }
             catch (ClientResultException ex)
@@ -200,6 +242,44 @@ public sealed class OpenAIResponsesModelClient : IApiModelClient
             || message.Contains("json schema", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsToolSchemaInvalid(ClientResultException exception)
+    {
+        var message = exception.Message;
+        return message.Contains("tool schema", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("json schema", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("function parameters", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsPreviousResponseInvalid(ClientResultException exception, ModelTurnRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.PreviousResponseId))
+        {
+            return false;
+        }
+
+        var message = exception.Message;
+        return message.Contains("previous_response_id", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("previous_response_not_found", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("response not found", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("stored response", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("cannot be resolved", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsOrphanedToolOutput(ClientResultException exception, ModelTurnRequest request)
+    {
+        if (!request.InputItems.OfType<ModelToolResultItem>().Any())
+        {
+            return false;
+        }
+
+        var message = exception.Message;
+        return string.IsNullOrWhiteSpace(request.PreviousResponseId)
+            && (message.Contains("function_call_output", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("tool output", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("call_id", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("function call", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static ResponseItem MapInputItem(ModelConversationItem item)
         => item switch
         {
@@ -254,5 +334,48 @@ public sealed class OpenAIResponsesModelClient : IApiModelClient
             "Development-only OpenAI raw response snapshot for {ResponseId}: {RawResponse}",
             response.Id,
             truncated);
+    }
+
+    private void LogRequestFailure(
+        ClientResultException exception,
+        ModelTurnRequest request,
+        string errorCode)
+    {
+        _logger.LogWarning(
+            exception,
+            "OpenAI request failure {ErrorCode} status {Status} model {Model} previousResponseIdSupplied {PreviousResponseIdSupplied} inputItemTypes {@InputItemTypes} toolNames {@ToolNames}",
+            errorCode,
+            exception.Status,
+            request.Model,
+            !string.IsNullOrWhiteSpace(request.PreviousResponseId),
+            request.InputItems.Select(static item => item.GetType().Name).ToArray(),
+            request.Tools.Select(static tool => tool.Name).ToArray());
+    }
+
+    private static string? TryGetOpenAiErrorCode(ClientResultException exception)
+    {
+        var message = exception.Message;
+        if (message.Contains("previous_response_not_found", StringComparison.OrdinalIgnoreCase))
+        {
+            return "previous_response_not_found";
+        }
+
+        if (message.Contains("invalid_request_error", StringComparison.OrdinalIgnoreCase))
+        {
+            return "invalid_request_error";
+        }
+
+        return null;
+    }
+
+    private static string? TryGetParameterName(ClientResultException exception)
+    {
+        var message = exception.Message;
+        if (message.Contains("previous_response_id", StringComparison.OrdinalIgnoreCase))
+        {
+            return "previous_response_id";
+        }
+
+        return null;
     }
 }

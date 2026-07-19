@@ -2,16 +2,22 @@ using AgentLearningLab.Application.Common;
 using AgentLearningLab.Domain.Entities;
 using AgentLearningLab.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using System.Data.Common;
 
 namespace AgentLearningLab.Infrastructure.Persistence;
 
-public sealed class LabDbInitializer(AgentLearningLabDbContext dbContext, ISystemClock clock)
+public sealed class LabDbInitializer(
+    AgentLearningLabDbContext dbContext,
+    ISystemClock clock,
+    ILogger<LabDbInitializer> logger)
 {
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         if (await RequiresSchemaRecreationAsync(cancellationToken))
         {
+            logger.LogWarning(
+                "Recreating the local SQLite database because the educational schema is missing required conversation-state columns.");
             await dbContext.Database.EnsureDeletedAsync(cancellationToken);
         }
 
@@ -134,6 +140,9 @@ public sealed class LabDbInitializer(AgentLearningLabDbContext dbContext, ISyste
             var messageColumns = await GetColumnNamesAsync(connection, "AgentMessages", cancellationToken);
 
             return !conversationColumns.Contains("IsArchived", StringComparer.OrdinalIgnoreCase)
+                || !conversationColumns.Contains("LastOpenAIResponseId", StringComparer.OrdinalIgnoreCase)
+                || !conversationColumns.Contains("LastOpenAIModel", StringComparer.OrdinalIgnoreCase)
+                || !conversationColumns.Contains("LastOpenAIResponseAtUtc", StringComparer.OrdinalIgnoreCase)
                 || !messageColumns.Contains("SequenceNumber", StringComparer.OrdinalIgnoreCase);
         }
         finally
